@@ -1,0 +1,70 @@
+/* ============================================================
+   base.css — 变量 / 重置 / 字体
+   改配色只需要动这里的 :root
+   ============================================================ */
+
+:root {
+  /* 底色：比纯黑偏绿一点，模拟军用地形图 */
+  --bg:        #0b0e0c;
+  --panel:     #141a15;
+  --panel-2:   #1b231c;
+  --panel-3:   #222b23;
+
+  /* 描边 */
+  --line:      #2b362c;
+  --line-soft: #202820;
+
+  /* 红警标志性的暗金 */
+  --gold:      #c9a227;
+  --gold-2:    #e8c65a;
+  --gold-dim:  #6f5c1e;
+
+  /* 文字 */
+  --text:      #d8d5c6;
+  --muted:     #8a8c7e;
+  --dim:       #5f6459;
+
+  /* 状态色 */
+  --red:       #e0524a;
+  --green:     #5fbf7f;
+  --blue:      #5b9bd5;
+  --warn:      #e8a33d;
+
+  --radius:    6px;
+  --radius-lg: 10px;
+
+  --font: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "Cascadia Mono", "Consolas", "Courier New", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+canvas { display: block; }
+
+.hidden { display: none !important; }
+
+/* 滚动条，避免默认亮色太跳 */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--panel-3); }

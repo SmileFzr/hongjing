@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>红警塔防 · 原型 v0.1</title>
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/layout.css">
+<link rel="stylesheet" href="css/ui.css">
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand"><span class="dot"></span>红警塔防<span class="ver">v0.1</span></div>
+
+    <div class="stats">
+      <div class="stat"><i>资金</i><b id="s-money">0</b></div>
+      <div class="stat" id="stat-power-box"><i>电力</i><b id="s-power">0 / 0</b></div>
+      <div class="stat"><i>波次</i><b id="s-wave">0 / 0</b></div>
+      <div class="stat"><i>基地</i><b id="s-base">100%</b></div>
+    </div>
+
+    <div class="actions">
+      <button id="btn-mute" class="btn" title="开关声音">音效</button>
+      <button id="btn-pause" class="btn" title="空格键也可以暂停">暂停</button>
+      <button id="btn-speed" class="btn" title="切换 1 倍 / 2 倍速">1×</button>
+      <button id="btn-restart" class="btn" title="重新开始">重开</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="stage">
+      <canvas id="game" width="1080" height="720"></canvas>
+      <div id="toast" class="toast"></div>
+      <div id="gameover" class="gameover hidden">
+        <div class="go-title">基地失守</div>
+        <div class="go-sub" id="go-sub">撑到了第 1 波</div>
+        <button class="btn btn-primary" id="btn-again">再来一次</button>
+      </div>
+    </div>
+
+    <aside id="sidebar">
+      <div class="side-head">
+        <span>建造清单</span>
+        <span class="side-power" id="side-power">电力充足</span>
+      </div>
+      <div id="shop" class="shop"></div>
+      <div class="side-foot" id="side-hint">
+        选中一项后，点击地图上的空地放置。
+        <br>右键 / Esc 取消选择。
+      </div>
+    </aside>
+  </main>
+
+</div>
+
+<script src="js/core/config.js"></script>
+<script src="js/core/utils.js"></script>
+<script src="js/core/map.js"></script>
+<script src="js/core/view.js"></script>
+<script src="js/core/audio.js"></script>
+<script src="js/data/damage.js"></script>
+<script src="js/data/units.js"></script>
+<script src="js/data/waves.js"></script>
+<script src="js/core/field.js"></script>
+<script src="js/core/battle.js"></script>
+<script src="js/game/state.js"></script>
+<script src="js/game/economy.js"></script>
+<script src="js/game/wave.js"></script>
+<script src="js/render/art.js"></script>
+<script src="js/render/scene.js"></script>
+<script src="js/render/hud.js"></script>
+<script src="js/render/input.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
