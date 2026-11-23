@@ -34,7 +34,7 @@ HJ.Game = {
   },
 
   newGame() {
-    const state = HJ.State.create();
+    const state = HJ.State.create({ map: HJ.Maps[HJ.Config.DEFAULT_MAP] });
     this.state = state;
     this.acc = 0;
 

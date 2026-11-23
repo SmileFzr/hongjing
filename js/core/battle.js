@@ -2,14 +2,24 @@
    battle.js — 战斗内核
    ------------------------------------------------------------
    这一层完全不知道渲染的存在：只吃 dt、改数值、产出特效标记。
-   塔防模式和自走棋模式将来都复用这一个文件。
+   塔防与遭遇战复用这一个文件。
 
-   核心规则：
-     1. 所有单位只打「射程内最近的、并且打得动的」目标
-     2. 敌人不走固定路线：每一步都问流场「往哪边走代价最小」
-     3. 建筑挡路时，敌人会停下来砸。砸穿之后流场重算，路线自动改
-     4. 移动单位有牵引半径：敌人进射程就出击，但不会追出自己的圈
-     5. 击杀累计：3 杀升老兵(+50%)，8 杀升精英(+100% 且自愈)
+   ★ 分侧重构（P1a）：原来 updateDefenders / updateEnemies 两套行为，
+     本质是两种**姿态**，不是两个阵营：
+
+       posture = 'hold'  守着打：记住驻扎点，敌人进射程就出击，
+                         但不追出牵引圈，打完回位。（原 defenders）
+       posture = 'push'  推着打：顺流场往对方基地走，路上有人就开火，
+                         被建筑挡住就拆。（原 enemies）
+
+     一个实体用哪套，由它所属侧的 posture 决定，建筑永远 'hold'。
+     塔防 = enemy 侧 push + player 侧 hold，所以行为与重构前逐帧相同。
+
+   其余规则没动：
+     1. 只打「射程内最近的、并且打得动的」目标
+     2. 打不动时飘「无效」
+     3. 击杀累计：3 杀老兵(+50%)、8 杀精英(+100% 且自愈)
+     4. 建筑不是墙，是「贵」—— 围死了就去拆最薄的那面
    ============================================================ */
 
 window.HJ = window.HJ || {};
@@ -21,57 +31,172 @@ HJ.Battle = {
   step(state, dt) {
     if (state.over) return;
 
-    /* 地形变过就重算一次距离场（放/拆建筑时打了脏标记） */
-    HJ.Field.ensure(state);
+    /* 地形变过就作废所有场，具体重建推迟到被问到 */
+    HJ.Field.ensure();
 
-    const fireMul = state.lowPower ? HJ.Config.LOW_POWER_FIRE_RATE : 1;
+    /* 断电惩罚按侧算：对方缺电不应该影响你的射速 */
+    const mulOf = {};
+    for (const sideId in state.sides) {
+      mulOf[sideId] = state.sides[sideId].lowPower ? HJ.Config.LOW_POWER_FIRE_RATE : 1;
+    }
 
-    this.updateDefenders(state, dt, fireMul);
-    this.updateEnemies(state, dt, fireMul);
+    for (const sideId in state.sides) {
+      const units = state.sides[sideId].units;
+      const fireMul = mulOf[sideId];
+      for (let i = 0; i < units.length; i++) {
+        const u = units[i];
+        if (u.alive) this.update(u, state, dt, fireMul);
+      }
+    }
+
     this.updateRegen(state, dt);
+    this.checkEnd(state);
     this.cleanup(state);
   },
 
-  /* ---------------- 防御方（玩家） ---------------- */
+  /* ---------------- 单个实体 ---------------- */
 
-  updateDefenders(state, dt, fireMul) {
-    for (const u of state.defenders) {
-      if (!u.alive) continue;
+  update(u, state, dt, fireMul) {
+    /* 冷却一直在走，这样切目标不会重置计时 */
+    u.cd -= dt;
+    if (u.invalidCd > 0) u.invalidCd -= dt;
 
-      /* 冷却一直在走，这样切目标不会重置计时 */
-      u.cd -= dt;
-      if (u.invalidCd > 0) u.invalidCd -= dt;
-
-      /* 目标不是每帧重算：0.1 秒一次，否则上百单位时开销吃不消 */
-      u.retarget -= dt;
-      if (u.retarget <= 0) {
-        /* 搜索半径 = 射程 + 牵引半径，也就是"它能追到多远"。
-           必须大于射程，否则单位永远发现不了射程外的敌人，
-           追击逻辑也就永远不会被触发 —— 这是 v0.3 那个"单位不动"的根因 */
-        u.target = this.findTarget(u, state.enemies, false, u.range + u.leash);
-        u.retarget = 0.1 + Math.random() * 0.06;
-      }
-
-      const t = u.target;
-
-      if (t && t.alive) {
-        if (HJ.Utils.dist2(u.x, u.y, t.x, t.y) <= u.range * u.range) {
-          /* 在射程内 → 停下开火 */
-          if (u.cd <= 0) {
-            u.cd = 1 / (u.rof * fireMul);
-            this.hit(u, t, state);
-          }
-        } else if (u.canMove) {
-          /* 目标在射程外但还没跑出牵引圈 → 追过去 */
-          this.chase(u, t, state, dt);
-        }
-        continue;
-      }
-
-      /* 场上没目标了 → 回驻扎点站好，等下一波 */
-      if (u.canMove) this.returnHome(u, dt, state);
-    }
+    if (u.posture === 'push') this.updatePush(u, state, dt, fireMul);
+    else this.updateHold(u, state, dt, fireMul);
   },
+
+  /**
+   * 守着打。
+   * ★ 搜索半径 = 射程 + 牵引半径，必须大于射程，否则单位永远发现不了
+   *   射程外的敌人，追击逻辑也就永远不会被触发 —— 这是 v0.3「单位不动」的根因
+   */
+  updateHold(u, state, dt, fireMul) {
+    u.retarget -= dt;
+    if (u.retarget <= 0) {
+      const foes = state.sides[HJ.State.foeSideId(u.side)].units;
+      u.target = this.findTarget(u, foes, false, u.range + u.leash);
+      u.retarget = 0.1 + Math.random() * 0.06;
+    }
+
+    const t = u.target;
+    if (!t || !t.alive) {
+      if (u.canMove) this.returnHome(u, dt, state);
+      return;
+    }
+
+    if (HJ.Utils.dist2(u.x, u.y, t.x, t.y) <= u.range * u.range) {
+      if (u.cd <= 0) {
+        u.cd = 1 / (u.rof * fireMul);
+        this.hit(u, t, state);
+      }
+      return;
+    }
+
+    /* 目标在射程外但还没跑出牵引圈 → 追过去 */
+    if (u.canMove) this.chase(u, t, state, dt);
+  },
+
+  /**
+   * 推着打。优先级和重构前一致：
+   *   1. 射程内有对方单位 → 停下开火（建筑不算，挡路才拆，
+   *      否则敌人会站在路边对着你的电厂啃四十秒）
+   *   2. 前路被建筑堵住 → 拆它
+   *   3. 摸到对方基地 → 啃基地
+   *   4. 没人拦 → 顺流场继续走
+   */
+  updatePush(u, state, dt, fireMul) {
+    const goalSide = HJ.State.foeSideId(u.side);
+    const foes = state.sides[goalSide].units;
+
+    u.retarget -= dt;
+    if (u.retarget <= 0) {
+      u.target = this.findTarget(u, foes, true);
+      u.retarget = 0.1 + Math.random() * 0.06;
+    }
+
+    const t = u.target;
+    if (t && t.alive) {
+      if (u.cd <= 0) {
+        u.cd = 1 / (u.rof * fireMul);
+        this.hit(u, t, state);
+      }
+      return;
+    }
+
+    /* 正在拆的那栋 */
+    if (u.breaching && u.breaching.alive) {
+      const s = u.breaching.size || 1;
+      const edge = HJ.Utils.distToRect(
+        u.x, u.y,
+        u.breaching.col, u.breaching.row,
+        u.breaching.col + s, u.breaching.row + s
+      );
+      if (edge <= u.range) {
+        u.target = u.breaching;
+        if (u.cd <= 0) {
+          u.cd = 1 / (u.rof * fireMul);
+          this.hit(u, u.breaching, state);
+        }
+        return;
+      }
+    }
+
+    const goalBase = state.map.bases[goalSide];
+    if (goalBase && goalBase.alive && HJ.Map.inBase(state.map, goalSide, u.x, u.y, 0.25)) {
+      u.breaching = null;
+      if (u.cd <= 0) {
+        u.cd = 1 / (u.rof * fireMul);
+        this.damageBase(u, goalBase, state);
+      }
+      return;
+    }
+
+    if (!u.canMove) return;
+    this.moveTowardGoal(u, state, dt, goalSide, goalBase);
+  },
+
+  /**
+   * 沿距离场的负梯度走一步。
+   * 正前方是建筑时不再绕：站住，把障碍记到 breaching 上，
+   * 下一帧就转成「拆它」。这就是「被墙挡住 → 拆墙」的全部实现。
+   */
+  moveTowardGoal(u, state, dt, goalSide, goalBase) {
+    const f = HJ.Field.forUnit(state, u);
+    const dir = f ? HJ.Field.dirTo(f, u.x, u.y) : null;
+
+    /* 对方没有基地就没有「要推到哪」的场，站着等目标出现即可
+       （塔防反过来的情形，两种模式都不会走到这里） */
+    if (!dir) return;
+
+    const sp = u.speed * dt;
+    const nx = u.x + dir.x * sp;
+    const ny = u.y + dir.y * sp;
+
+    /* 目标基地范围内不再做碰撞检测（单位就是要走进去打它） */
+    if (goalBase && HJ.Map.inBase(state.map, goalSide, nx, ny, 0)) {
+      u.x = nx; u.y = ny;
+      u.col = Math.floor(nx); u.row = Math.floor(ny);
+      u.breaching = null;
+      return;
+    }
+
+    /* 不可通行的地形不走。P1a 全平地，这条永远不触发，
+       P2 接地形之后它才是「河把地图切成两块」的实现处 */
+    if (!isFinite(HJ.Map.moveCost(state.map, u.moveClass, Math.floor(nx), Math.floor(ny)))) return;
+
+    const blocker = HJ.Map.occupantAt(state, nx, ny);
+    if (blocker) {
+      u.breaching = blocker;
+      return;
+    }
+
+    u.breaching = null;
+    u.x = nx; u.y = ny;
+    u.col = Math.floor(nx); u.row = Math.floor(ny);
+    this.emitMoveFx(state, u, dir.x, dir.y, sp);
+  },
+
+  /* ---------------- 移动（hold 专用） ---------------- */
 
   /**
    * 出击。关键在限制条件用的是「离驻扎点」的距离，不是「离当前位置」——
@@ -96,7 +221,7 @@ HJ.Battle = {
     this.emitMoveFx(state, u, dx / L, dy / L, step);
   },
 
-  /** 归位。归位途中不还击，这就是"追出去"要付的代价 */
+  /** 归位。归位途中不还击，这就是「追出去」要付的代价 */
   returnHome(u, dt, state) {
     const dx = u.homeX - u.x;
     const dy = u.homeY - u.y;
@@ -119,34 +244,31 @@ HJ.Battle = {
   },
 
   /**
-   * 移动留下的痕迹。逻辑层只负责"在哪留下了什么"，
-   * 画成什么样交给渲染层。
+   * 移动留下的痕迹。逻辑层只负责「在哪留下了什么」，画成什么样交给渲染层。
    *   tracks  履带印，只有车辆留，长期保留
    *   dust    扬尘，所有移动单位都扬，几百毫秒就散
    */
   emitMoveFx(state, u, dirX, dirY, step) {
+    /* 朝向记在单位身上，渲染层只读不猜。
+       这里存的是原始向量，像素画自己在 4 个朝向里量化 —— 逻辑层不该知道「朝向」是个四向概念 */
+    u.faceX = dirX;
+    u.faceY = dirY;
+
     const isVehicle = u.kind === 'vehicle';
 
-    /* 履带印：每走半格压一道 */
     if (isVehicle) {
       u.trackAcc = (u.trackAcc || 0) + step;
       if (u.trackAcc >= 0.45) {
         u.trackAcc = 0;
-        if (!state.tracks) state.tracks = [];
-        state.tracks.push({
-          x: u.x,
-          y: u.y,
-          ang: Math.atan2(dirY, dirX),
-        });
+        state.tracks.push({ x: u.x, y: u.y, ang: Math.atan2(dirY, dirX) });
         if (state.tracks.length > 420) state.tracks.shift();
       }
     }
 
-    /* 扬尘：按走过的距离攒，不用计时器，速度快就扬得多 */
+    /* 扬尘按走过的距离攒，不用计时器，跑得快就扬得密 */
     u.dustAcc = (u.dustAcc || 0) + step;
     if (u.dustAcc >= 0.55) {
       u.dustAcc = 0;
-      if (!state.dust) state.dust = [];
       state.dust.push({
         x: u.x + HJ.Utils.rand(-0.16, 0.16),
         y: u.y + 0.22,
@@ -160,134 +282,15 @@ HJ.Battle = {
     }
   },
 
-  /* ---------------- 进攻方（敌人） ---------------- */
-
-  updateEnemies(state, dt, fireMul) {
-    for (const e of state.enemies) {
-      if (!e.alive) continue;
-
-      e.cd -= dt;
-      if (e.invalidCd > 0) e.invalidCd -= dt;
-
-      /* 1. 射程内有玩家单位 → 停下开火。
-         建筑不算在内：建筑只有在真的挡住去路时才值得拆，
-         否则敌人会站在路边对着你的电厂啃四十秒，整波卡死在那儿 */
-      e.retarget -= dt;
-      if (e.retarget <= 0) {
-        e.target = this.findTarget(e, state.defenders, true);
-        e.retarget = 0.1 + Math.random() * 0.06;
-      }
-
-      const t = e.target;
-      if (t && t.alive) {
-        if (e.cd <= 0) {
-          e.cd = 1 / (e.rof * fireMul);
-          this.hit(e, t, state);
-        }
-        continue;
-      }
-
-      /* 2. 前路被建筑堵住 → 就地拆它 */
-      if (e.breaching && e.breaching.alive) {
-        const s = e.breaching.size || 1;
-        const edge = HJ.Utils.distToRect(
-          e.x, e.y,
-          e.breaching.col, e.breaching.row,
-          e.breaching.col + s, e.breaching.row + s
-        );
-        if (edge <= e.range) {
-          e.target = e.breaching;
-          if (e.cd <= 0) {
-            e.cd = 1 / (e.rof * fireMul);
-            this.hit(e, e.breaching, state);
-          }
-          continue;
-        }
-      }
-
-      /* 3. 已经摸到基地 → 啃基地 */
-      if (HJ.Map.inBase(e.x, e.y, 0.25)) {
-        e.breaching = null;
-        if (e.cd <= 0) {
-          e.cd = 1 / (e.rof * fireMul);
-          this.damageBase(e, state);
-        }
-        continue;
-      }
-
-      /* 4. 没人拦，顺着流场继续往里走 */
-      this.moveEnemy(e, state, dt);
-    }
-  },
-
-  /**
-   * 沿距离场的负梯度走一步。
-   * 正前方是建筑时不再绕：站住，把障碍记到 breaching 上，
-   * 下一帧就转成"拆它"。这就是"敌人被墙挡住 → 拆墙"的全部实现。
-   */
-  moveEnemy(e, state, dt) {
-    const dir = HJ.Field.dirTo(e.x, e.y);
-    if (!dir) return;
-
-    const sp = e.speed * dt;
-    const nx = e.x + dir.x * sp;
-    const ny = e.y + dir.y * sp;
-
-    /* 基地范围内不再做碰撞检测（敌人就是要走进去打它） */
-    if (HJ.Map.inBase(nx, ny, 0)) {
-      e.x = nx;
-      e.y = ny;
-      e.col = Math.floor(nx);
-      e.row = Math.floor(ny);
-      e.breaching = null;
-      return;
-    }
-
-    const blocker = HJ.Map.occupantAt(state, nx, ny);
-    if (blocker) {
-      e.breaching = blocker;
-      return;
-    }
-
-    e.breaching = null;
-    e.x = nx;
-    e.y = ny;
-    e.col = Math.floor(nx);
-    e.row = Math.floor(ny);
-  },
-
-  damageBase(e, state) {
-    const dmg = HJ.Damage.calc(e.damage, e.warhead, 'building', HJ.Config.BASE_DAMAGE_MUL);
-    state.base.hp -= dmg.amount;
-
-    state.effects.push({
-      x1: e.x, y1: e.y,
-      x2: state.base.x, y2: state.base.y,
-      warhead: 'AP',
-      side: 'enemy',
-      big: true,
-      t: 0,
-      max: 0.34,
-    });
-
-    if (HJ.Sfx) HJ.Sfx.play('alarm');
-
-    if (state.base.hp <= 0) {
-      state.base.hp = 0;
-      state.over = true;
-      if (HJ.HUD) HJ.HUD.gameOver(state, state.waveIndex);
-    }
-  },
-
   /* ---------------- 目标选择 ---------------- */
 
   /**
    * 找「射程内最近、且打得动」的目标。
-   * 打不动的直接跳过 —— 谭雅不会对着坦克浪费子弹，敌人也不会拿步枪啃天启。
+   * 打不动的直接跳过 —— 谭雅不会对着坦克浪费子弹。
    *
-   * @param {boolean} ignoreBuildings 敌人专用：建筑走"挡路才拆"的独立判定
-   * @param {number} searchR 搜索半径。默认等于射程，玩家单位传 range + leash，
-   *                         这样"发现敌人"的范围比"开火"的范围大，才会主动出击
+   * @param {boolean} ignoreBuildings push 姿态专用：建筑走「挡路才拆」的独立判定
+   * @param {number} searchR 搜索半径。hold 传 range + leash，
+   *                         让「发现敌人」的范围比「开火」大，才会主动出击
    */
   findTarget(from, list, ignoreBuildings, searchR) {
     let best = null;
@@ -313,13 +316,19 @@ HJ.Battle = {
   /* ---------------- 伤害结算 ---------------- */
 
   hit(a, b, state) {
+    /* 开火瞬间记住瞄的方向：车辆据此转炮塔，步兵据此转身。
+       和 faceX/faceY 分开存，「车往一边走、炮往一边瞄」是 RTS 最基本的观感 */
+    const adx = b.x - a.x, ady = b.y - a.y;
+    const al = Math.hypot(adx, ady) || 1;
+    a.aimX = adx / al;
+    a.aimY = ady / al;
+
     const bonus = this.levelBonus(a.level);
     const res = HJ.Damage.calc(a.damage, a.warhead, b.armor, bonus);
 
     b.hp -= res.amount;
 
-    /* 只产出"发生了什么"，不决定怎么画。
-       warhead 传下去，渲染层自己挑对应的特效 */
+    /* 只产出「发生了什么」，不决定怎么画。warhead 传下去，渲染层挑画法 */
     state.effects.push({
       x1: a.x, y1: a.y,
       x2: b.x, y2: b.y,
@@ -332,7 +341,7 @@ HJ.Battle = {
 
     if (HJ.Sfx) HJ.Sfx.fire(a.warhead);
 
-    /* 打不动的时候冒个"无效"提示，让克制关系被看见。
+    /* 打不动的时候冒个提示，让克制关系被看见。
        每个目标 1.5 秒最多提示一次，否则满屏都是这两个字 */
     if (res.mult <= 0.1) {
       if ((b.invalidCd || 0) <= 0) {
@@ -351,12 +360,49 @@ HJ.Battle = {
     }
   },
 
+  /** 啃基地：伤害另有一档折扣，漏怪不至于瞬间崩 */
+  damageBase(a, base, state) {
+    const dmg = HJ.Damage.calc(a.damage, a.warhead, 'building', HJ.Config.BASE_DAMAGE_MUL);
+    base.hp -= dmg.amount;
+
+    state.effects.push({
+      x1: a.x, y1: a.y,
+      x2: base.x, y2: base.y,
+      warhead: 'AP',
+      side: a.side,
+      big: true,
+      t: 0,
+      max: 0.34,
+    });
+
+    if (HJ.Sfx) HJ.Sfx.play('alarm');
+
+    if (base.hp <= 0) {
+      base.hp = 0;
+      base.alive = false;
+    }
+  },
+
   onKill(killer, victim, state) {
+    /* 赏金归杀掉对方的那一侧 */
+    const rich = state.sides[victim.side === 'player' ? 'enemy' : 'player'];
+
+    if (victim.isBase) {
+      if (HJ.Sfx) HJ.Sfx.play('explode');
+      return;
+    }
+
     if (victim.side === 'enemy') {
       if (HJ.Sfx) HJ.Sfx.play('explode');
-      state.money += victim.bounty || 0;
       state.killCount++;
+    }
 
+    if (victim.bounty) rich.money += victim.bounty;
+
+    /* 老兵晋升。P1a 先只给玩家侧，保持塔防难度与重构前可比；
+       遭遇战做平衡时（P4）把 FOE_VETERANCY 打开，两侧对称 */
+    const foeLevels = killer.side === 'enemy' && HJ.Config.FOE_VETERANCY;
+    if (killer.side === 'player' || foeLevels) {
       killer.kills = (killer.kills || 0) + 1;
       const lv = killer.kills >= this.ELITE_KILLS ? 2
                : killer.kills >= this.VET_KILLS ? 1 : 0;
@@ -370,11 +416,10 @@ HJ.Battle = {
           size: 11,
         });
       }
-      return;
     }
 
-    /* 玩家的建筑被打掉 → 提示一下。兵营没了就造不出兵，
-       这个反馈必须让玩家立刻知道，否则他会以为是 bug */
+    /* 建筑被打掉 → 立刻提示。兵营没了就造不出兵，
+       这个反馈必须让玩家马上知道，否则他会以为是 bug */
     if (victim.isBuilding && HJ.HUD && HJ.HUD.toast) {
       HJ.HUD.toast(victim.name + ' 被摧毁', true);
     }
@@ -388,10 +433,36 @@ HJ.Battle = {
 
   /* 精英单位缓慢自愈 */
   updateRegen(state, dt) {
-    for (const u of state.defenders) {
-      if (!u.alive || u.level < 2) continue;
-      if (u.hp >= u.maxHp) continue;
-      u.hp = Math.min(u.maxHp, u.hp + 2.5 * dt);
+    for (const sideId in state.sides) {
+      for (const u of state.sides[sideId].units) {
+        if (!u.alive || u.level < 2) continue;
+        if (u.hp >= u.maxHp) continue;
+        u.hp = Math.min(u.maxHp, u.hp + 2.5 * dt);
+      }
+    }
+  },
+
+  /* ---------------- 终局判定 ---------------- */
+
+  /* 基地被推平就结束。
+     塔防里 enemy 侧没有基地，所以只有玩家输得掉；
+     遭遇战双方都有基地，任何一侧被推平都分出胜负。
+     「建筑全被拆光也算输」这条留到 P3 和胜负条件一起设计，
+     现在写只会是个没法验证的死条件（尸体立刻被 cleanup 掉）。 */
+  checkEnd(state) {
+    if (state.over) return;
+
+    for (const sideId in state.sides) {
+      const b = state.sides[sideId].base;
+      if (!b || b.alive) continue;
+
+      state.over = true;
+      state.winner = HJ.State.foeSideId(sideId);
+      state.won = state.winner === 'player';
+      if (HJ.HUD) {
+        HJ.HUD.gameOver(state, state.waveIndex, state.winner === 'player');
+      }
+      return;
     }
   },
 
@@ -400,15 +471,14 @@ HJ.Battle = {
   cleanup(state) {
     const T = HJ.Config.TICK;
 
-    for (let i = state.enemies.length - 1; i >= 0; i--) {
-      if (!state.enemies[i].alive) state.enemies.splice(i, 1);
-    }
+    for (const sideId in state.sides) {
+      const list = state.sides[sideId].units;
+      for (let i = list.length - 1; i >= 0; i--) {
+        const u = list[i];
+        if (u.alive) continue;
 
-    for (let i = state.defenders.length - 1; i >= 0; i--) {
-      const u = state.defenders[i];
-      if (!u.alive) {
         /* 建筑塌了要把占的格子还回去，并让流场重算，
-           否则敌人会一直绕着一堵不存在的墙走 */
+           否则对方会一直绕着一堵不存在的墙走 */
         if (u.isBuilding) {
           const s = u.size || 1;
           for (let r = u.row; r < u.row + s; r++) {
@@ -418,7 +488,7 @@ HJ.Battle = {
           }
           HJ.Field.dirty = true;
         }
-        state.defenders.splice(i, 1);
+        list.splice(i, 1);
       }
     }
 
@@ -434,19 +504,17 @@ HJ.Battle = {
     }
 
     /* 扬尘：向上飘、横向扩散、慢慢淡掉 */
-    if (state.dust) {
-      for (let i = state.dust.length - 1; i >= 0; i--) {
-        const d = state.dust[i];
-        d.t += T;
-        if (d.t >= d.max) {
-          state.dust.splice(i, 1);
-          continue;
-        }
-        d.x += d.vx * T;
-        d.y += d.vy * T;
-        d.vy *= 0.97;
-        d.r += 2.2 * T;
+    for (let i = state.dust.length - 1; i >= 0; i--) {
+      const d = state.dust[i];
+      d.t += T;
+      if (d.t >= d.max) {
+        state.dust.splice(i, 1);
+        continue;
       }
+      d.x += d.vx * T;
+      d.y += d.vy * T;
+      d.vy *= 0.97;
+      d.r += 2.2 * T;
     }
   },
 };

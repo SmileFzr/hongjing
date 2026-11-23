@@ -7,9 +7,9 @@ window.HJ = window.HJ || {};
 
 HJ.Config = {
   /* --- 地图 --- */
-  COLS: 36,          // 横向格子数
-  ROWS: 24,          // 纵向格子数
-  GRID: 30,          // 每格边长（像素），平面正交
+  /* 地图是数据（见 data/maps.js），尺寸一律读 state.map，不在这里写死。
+     格子像素也不在这里：相机和投影全在 core/view.js。 */
+  DEFAULT_MAP: 'defense',
 
   /* --- 战斗 --- */
   TICK: 1 / 60,      // 逻辑固定步长（秒），与渲染帧率解耦
@@ -21,6 +21,12 @@ HJ.Config = {
   /* 敌人啃基地的伤害折扣。以前给 0.35，结果 20 个步兵要拆五分钟，
      整局拖成拉锯战。现在是 1.0：漏怪就要立刻见血 */
   BASE_DAMAGE_MUL: 1.0,
+
+  /* 敌方单位靠击杀晋升老兵/精英。
+     P1a 分侧重构时关掉，为的是「重构前后逐帧行为可比」——
+     给怪加晋升是难度改动，不该混在结构改动里。
+     遭遇战做平衡时（P4）打开，两侧对称。 */
+  FOE_VETERANCY: false,
 
   /* --- 经济 --- */
   KILL_BOUNTY: 0.35,     // 击杀返还单位造价的百分比
@@ -35,7 +41,3 @@ HJ.Config = {
   SELL_RATE: 0.5,        // 拆除返还比例
   GRID_DEBUG: false,     // 按 F 打开的流场热力图开关（开发用）
 };
-
-/* 派生的像素尺寸，避免到处重复算 */
-HJ.Config.W = HJ.Config.COLS * HJ.Config.GRID;  // 1080
-HJ.Config.H = HJ.Config.ROWS * HJ.Config.GRID;  // 720

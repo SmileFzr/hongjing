@@ -39,7 +39,7 @@ HJ.Wave = {
     state.waveActive = true;
     state.waveClock = 0;
     if (HJ.Sfx) HJ.Sfx.play('wave');
-    state.spawnQueue = this.buildQueue(w);
+    state.spawnQueue = this.buildQueue(state.map, w);
 
     if (HJ.HUD) {
       HJ.HUD.toast('第 ' + (state.waveIndex + 1) + ' 波 · ' + w.name);
@@ -69,11 +69,11 @@ HJ.Wave = {
    * 把 spawns 展开成按时间排序的具体生成点。
    * 每个个体单独分配入口 —— 同一波里的敌人可能从三个方向同时压上来。
    */
-  buildQueue(wave) {
+  buildQueue(map, wave) {
     const q = [];
     const entries = (wave.entries && wave.entries.length)
       ? wave.entries
-      : HJ.Map.entrances.map(e => e.id);
+      : map.entrances.map(e => e.id);
 
     for (const s of wave.spawns) {
       const start = s.delay || 0;

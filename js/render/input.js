@@ -37,6 +37,8 @@ HJ.Input = {
 
     document.addEventListener('keydown', (e) => this.onKey(e));
 
+    this.bindPointer(canvas);
+
     document.getElementById('btn-mute').addEventListener('click', () => this.toggleMute());
     document.getElementById('btn-pause').addEventListener('click', () => this.togglePause());
     document.getElementById('btn-speed').addEventListener('click', () => this.toggleSpeed());
@@ -44,12 +46,52 @@ HJ.Input = {
     document.getElementById('btn-again').addEventListener('click', () => HJ.Game.restart());
   },
 
-  /* 屏幕坐标 → 格子坐标。画布被 CSS 缩放过，先按比例还原到内部分辨率 */
+  /**
+   * 鼠标版相机：左键拖 = 平移，滚轮 = 整数倍缩放。
+   * 拖动超过阈值就不再当点击，否则拉一下地图就把建筑放下了。
+   * （触屏那一套在 P1c，逻辑同样是「位移阈值区分点与拖」）
+   */
+  bindPointer(canvas) {
+    let down = null;
+    let panning = false;
+
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      down = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY };
+      panning = false;
+      this.suppressClick = false;
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!down) return;
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      if (!panning && moved > 8) panning = true;
+      if (!panning) return;
+      const V = HJ.View;
+      V.panBy((e.clientX - down.lx) * V.dpr, (e.clientY - down.ly) * V.dpr);
+      down.lx = e.clientX;
+      down.ly = e.clientY;
+    });
+
+    window.addEventListener('pointerup', () => {
+      /* 这一帧末尾的 click 事件是拖出来的，不是玩家想放下建筑 */
+      if (panning) this.suppressClick = true;
+      down = null;
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const p = HJ.View.fromCss(e.clientX - rect.left, e.clientY - rect.top);
+      HJ.View.zoomStep(e.deltaY < 0 ? 1 : -1, p.x, p.y);
+    }, { passive: false });
+  },
+
+  /* 屏幕坐标 → 格子坐标。画布内部分辨率是设备像素，先交给 view 还原 */
   toCell(e, canvas) {
     const rect = canvas.getBoundingClientRect();
-    const sx = (e.clientX - rect.left) / rect.width * HJ.Config.W;
-    const sy = (e.clientY - rect.top) / rect.height * HJ.Config.H;
-    const w = HJ.View.toWorld(sx, sy);
+    const p = HJ.View.fromCss(e.clientX - rect.left, e.clientY - rect.top);
+    const w = HJ.View.toWorld(p.x, p.y);
     return { col: Math.floor(w.x), row: Math.floor(w.y) };
   },
 
@@ -67,8 +109,8 @@ HJ.Input = {
         && HJ.Economy.isUnlocked(s, s.selected)
         && HJ.Economy.canAfford(s, s.selected);
     } else if (s.selectedUnit) {
-      /* 指挥移动：目标格不能被建筑或基地占着 */
-      s.hover.valid = !HJ.Map.occupant(s, col, row) && !HJ.Map.isBaseCell(col, row);
+      /* 指挥移动：目标格不能被建筑或任何一侧的基地占着 */
+      s.hover.valid = !HJ.Map.occupant(s, col, row) && !HJ.Map.overlapsAnyBase(s.map, col, row, 1);
     } else {
       s.hover.valid = false;
     }
@@ -77,9 +119,10 @@ HJ.Input = {
   onClick(e, canvas) {
     const s = this.state;
     if (s.over) return;
+    if (this.suppressClick) { this.suppressClick = false; return; }
 
     const { col, row } = this.toCell(e, canvas);
-    if (col < 0 || row < 0 || col >= HJ.Config.COLS || row >= HJ.Config.ROWS) return;
+    if (col < 0 || row < 0 || col >= s.map.cols || row >= s.map.rows) return;
 
     /* ---- 优先级 1：正在放置建筑 ---- */
     if (s.selected) {
@@ -103,7 +146,7 @@ HJ.Input = {
         s.selectedUnit = null;
         return;
       }
-      if (HJ.Map.occupant(s, col, row) || HJ.Map.isBaseCell(col, row)) {
+      if (HJ.Map.occupant(s, col, row) || HJ.Map.overlapsAnyBase(s.map, col, row, 1)) {
         HJ.HUD.toast('那里放不下', true);
         return;
       }
@@ -158,6 +201,11 @@ HJ.Input = {
     }
 
     if (target) {
+      /* occupied 表里两侧的建筑都有，右键只能拆自己的 */
+      if (target.side !== 'player') {
+        HJ.HUD.toast('那是对方的建筑', true);
+        return;
+      }
       const back = Math.floor(target.cost * HJ.Config.SELL_RATE);
       HJ.Economy.demolish(s, target);
       HJ.HUD.toast('已拆除 ' + target.name + '（返还 ' + back + '）');
@@ -184,6 +232,14 @@ HJ.Input = {
       HJ.HUD.toast(HJ.Config.GRID_DEBUG ? '流场显示：开' : '流场显示：关');
       return;
     }
+    /* 地图比屏幕大，键盘也能推着看 */
+    const PAN = 96 * HJ.View.dpr;
+    if (e.code === 'ArrowLeft') { HJ.View.panBy(PAN, 0); return; }
+    if (e.code === 'ArrowRight') { HJ.View.panBy(-PAN, 0); return; }
+    if (e.code === 'ArrowUp') { HJ.View.panBy(0, PAN); return; }
+    if (e.code === 'ArrowDown') { HJ.View.panBy(0, -PAN); return; }
+    if (e.code === 'Equal' || e.code === 'NumpadAdd') { HJ.View.zoomStep(1, HJ.View.vw / 2, HJ.View.vh / 2); return; }
+    if (e.code === 'Minus' || e.code === 'NumpadSubtract') { HJ.View.zoomStep(-1, HJ.View.vw / 2, HJ.View.vh / 2); return; }
     if (e.code === 'KeyR' && e.shiftKey) {
       HJ.Game.restart();
     }
