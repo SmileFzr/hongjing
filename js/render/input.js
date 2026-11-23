@@ -1,16 +1,28 @@
 /* ============================================================
-   input.js — 鼠标与键盘交互
+   input.js — 指针交互（鼠标 + 触屏同一套）
    ------------------------------------------------------------
-   左键：放置选中的建筑 / 单位
-   右键：取消选择；若没选中，则拆除鼠标指的己方单位
-   空格：暂停    Esc：取消选择
+   鼠标：悬停出预览，左键放置/选中，右键取消或拆除，键盘平移缩放。
+   触屏：单指拖 = 平移，单指轻点 = 鼠标左键，双指捏合 = 整数倍缩放。
+
+   ★ 点还是拖，只看位移阈值：手指按下必然先动一点点，
+     用「抬起时累计位移是否超过阈值」区分，而不是猜用户想干什么。
+   ★ 一旦第二根手指落下，这一轮所有手指都不要再产生点击，
+     否则捏合收尾时会在地图上盖一个建筑。
    ============================================================ */
 
 window.HJ = window.HJ || {};
 
 HJ.Input = {
   state: null,
+  canvas: null,
   bound: false,
+
+  /* 判定「拖」的位移阈值（CSS 像素，够大到不会误判，够小到不影响轻点） */
+  TAP_SLOP: 9,
+
+  pointers: null,   // pointerId -> { x, y, ox, oy, moved }，坐标是画布内部设备像素
+  pinch: null,
+  multiTouch: false,
 
   /**
    * 事件只在第一次绑一次。重开游戏时只换 state，不重复绑定，
@@ -20,85 +32,168 @@ HJ.Input = {
     this.state = state;
     if (this.bound) return;
     this.bound = true;
+    this.pointers = new Map();
 
     const canvas = document.getElementById('game');
+    this.canvas = canvas;
 
-    canvas.addEventListener('mousemove', (e) => this.onMove(e, canvas));
-    canvas.addEventListener('mouseleave', () => {
-      if (!this.state) return;
-      this.state.hover.col = -1;
-      this.state.hover.row = -1;
-    });
-    canvas.addEventListener('click', (e) => this.onClick(e, canvas));
     canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      this.onRightClick(e, canvas);
+      this.onRightClick(e);
     });
 
     document.addEventListener('keydown', (e) => this.onKey(e));
 
     this.bindPointer(canvas);
-
-    document.getElementById('btn-mute').addEventListener('click', () => this.toggleMute());
-    document.getElementById('btn-pause').addEventListener('click', () => this.togglePause());
-    document.getElementById('btn-speed').addEventListener('click', () => this.toggleSpeed());
-    document.getElementById('btn-restart').addEventListener('click', () => HJ.Game.restart());
-    document.getElementById('btn-again').addEventListener('click', () => HJ.Game.restart());
+    this.bindButtons();
   },
 
-  /**
-   * 鼠标版相机：左键拖 = 平移，滚轮 = 整数倍缩放。
-   * 拖动超过阈值就不再当点击，否则拉一下地图就把建筑放下了。
-   * （触屏那一套在 P1c，逻辑同样是「位移阈值区分点与拖」）
-   */
+  bindButtons() {
+    const on = (id, fn) => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('click', fn);
+    };
+    on('btn-mute', () => this.toggleMute());
+    on('btn-pause', () => this.togglePause());
+    on('btn-speed', () => this.toggleSpeed());
+    on('btn-restart', () => HJ.Game.restart());
+    on('btn-again', () => HJ.Game.restart());
+
+    /* 手机上的指挥按钮：没有右键和 Esc，得给个能按的地方 */
+    on('cmd-cancel', () => {
+      this.clearCommand();
+      HJ.HUD.update(true);
+    });
+    on('cmd-same', () => this.selectSameType());
+    on('cmd-home', () => this.focusBase());
+  },
+
+  /* ---------------- 指针 ---------------- */
+
+  /** 客户端坐标 → 画布内部设备像素（画布被 CSS 缩放过，不能直接用） */
+  local(clientX, clientY) {
+    const rect = this.canvas.getBoundingClientRect();
+    return HJ.View.fromCss(clientX - rect.left, clientY - rect.top);
+  },
+
   bindPointer(canvas) {
-    let down = null;
-    let panning = false;
+    const P = this.pointers;
 
     canvas.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
-      down = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY };
-      panning = false;
-      this.suppressClick = false;
+      /* 右键交给 contextmenu，中键不管 */
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      /* contextmenu 事件里没有 pointerType，只能记住最后一次是用什么碰的画布 */
+      this.lastPointer = e.pointerType;
+      const p = this.local(e.clientX, e.clientY);
+      P.set(e.pointerId, { x: p.x, y: p.y, ox: p.x, oy: p.y, moved: false });
+
+      if (P.size === 2) this.beginPinch();
+      if (P.size > 1) this.multiTouch = true;
+
+      /* 抓住指针：手指滑出画布也要继续算这一笔，不然松手时收不到事件 */
+      if (canvas.setPointerCapture) { try { canvas.setPointerCapture(e.pointerId); } catch (_) {} }
+      if (e.pointerType !== 'mouse') e.preventDefault();
     });
 
     canvas.addEventListener('pointermove', (e) => {
-      if (!down) return;
-      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
-      if (!panning && moved > 8) panning = true;
-      if (!panning) return;
-      const V = HJ.View;
-      V.panBy((e.clientX - down.lx) * V.dpr, (e.clientY - down.ly) * V.dpr);
-      down.lx = e.clientX;
-      down.ly = e.clientY;
+      const rec = P.get(e.pointerId);
+      const p = this.local(e.clientX, e.clientY);
+
+      /* 只有鼠标有"悬停"这个状态，手指不在地图上留预览 */
+      if (e.pointerType === 'mouse' && P.size === 0) this.hoverAt(p);
+      if (!rec) return;
+
+      const dx = p.x - rec.x, dy = p.y - rec.y;
+      rec.x = p.x;
+      rec.y = p.y;
+      const slop = this.TAP_SLOP * HJ.View.dpr;
+      if (!rec.moved && Math.hypot(p.x - rec.ox, p.y - rec.oy) > slop) rec.moved = true;
+
+      if (P.size >= 2) { this.updatePinch(); return; }
+      if (rec.moved) HJ.View.panBy(dx, dy);
     });
 
-    window.addEventListener('pointerup', () => {
-      /* 这一帧末尾的 click 事件是拖出来的，不是玩家想放下建筑 */
-      if (panning) this.suppressClick = true;
-      down = null;
+    const release = (e) => {
+      const rec = P.get(e.pointerId);
+      if (!rec) return;
+      P.delete(e.pointerId);
+      if (P.size < 2) this.pinch = null;
+      if (P.size === 0) {
+        /* 第二根手指一旦出现过，这一轮的所有抬手都不算点击 */
+        if (!rec.moved && !this.multiTouch) this.tapAt({ x: rec.x, y: rec.y });
+        this.multiTouch = false;
+      }
+    };
+    canvas.addEventListener('pointerup', release);
+    canvas.addEventListener('pointercancel', release);
+
+    canvas.addEventListener('mouseleave', () => {
+      if (!this.state) return;
+      this.state.hover.col = -1;
+      this.state.hover.row = -1;
     });
 
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const p = HJ.View.fromCss(e.clientX - rect.left, e.clientY - rect.top);
+      const p = this.local(e.clientX, e.clientY);
       HJ.View.zoomStep(e.deltaY < 0 ? 1 : -1, p.x, p.y);
     }, { passive: false });
   },
 
-  /* 屏幕坐标 → 格子坐标。画布内部分辨率是设备像素，先交给 view 还原 */
-  toCell(e, canvas) {
-    const rect = canvas.getBoundingClientRect();
-    const p = HJ.View.fromCss(e.clientX - rect.left, e.clientY - rect.top);
+  /* ---------------- 相机手势 ---------------- */
+
+  beginPinch() {
+    const it = Array.from(this.pointers.values());
+    const a = it[0], b = it[1];
+    this.pinch = {
+      dist: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+      zoom: HJ.View.zoom,
+      mx: (a.x + b.x) / 2,
+      my: (a.y + b.y) / 2,
+    };
+  },
+
+  /**
+   * 双指：中点移动 = 平移，指间距变化 = 缩放。
+   * zoom 只允许整数，所以捏合是"到档位才跳一格"，不会半糊不糊。
+   * 缩放以中点为锚，按住的地方不会漂走。
+   */
+  updatePinch() {
+    if (!this.pinch) this.beginPinch();
+    const it = Array.from(this.pointers.values());
+    if (it.length < 2) return;
+    const a = it[0], b = it[1];
+    const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+
+    HJ.View.panBy(mx - this.pinch.mx, my - this.pinch.my);
+    HJ.View.setZoom(this.pinch.zoom * dist / this.pinch.dist, mx, my);
+
+    this.pinch.mx = mx;
+    this.pinch.my = my;
+  },
+
+  focusBase() {
+    const s = this.state;
+    HJ.View.setMap(s.map, 'player');
+    HJ.HUD.toast('回到基地');
+  },
+
+  /* ---------------- 坐标与选中 ---------------- */
+
+  /** 画布内像素 → 格子坐标 */
+  cellAt(p) {
     const w = HJ.View.toWorld(p.x, p.y);
     return { col: Math.floor(w.x), row: Math.floor(w.y) };
   },
 
-  onMove(e, canvas) {
-    const { col, row } = this.toCell(e, canvas);
-    const s = this.state;
+  hoverAt(p) {
+    const { col, row } = this.cellAt(p);
+    this.setHover(col, row);
+  },
 
+  setHover(col, row) {
+    const s = this.state;
     s.hover.col = col;
     s.hover.row = row;
 
@@ -116,12 +211,13 @@ HJ.Input = {
     }
   },
 
-  onClick(e, canvas) {
+  /* ---------------- 轻点 / 左键 ---------------- */
+
+  tapAt(p) {
     const s = this.state;
     if (s.over) return;
-    if (this.suppressClick) { this.suppressClick = false; return; }
 
-    const { col, row } = this.toCell(e, canvas);
+    const { col, row } = this.cellAt(p);
     if (col < 0 || row < 0 || col >= s.map.cols || row >= s.map.rows) return;
 
     /* ---- 优先级 1：正在放置建筑 ---- */
@@ -139,11 +235,11 @@ HJ.Input = {
       return;
     }
 
-    /* ---- 优先级 2：已经选中了某个单位，这一下是在指定的新阵地 ---- */
+    /* ---- 优先级 2：已经选中单位，这一下是指定新阵地 ---- */
     if (s.selectedUnit) {
-      const u = s.selectedUnit;
-      if (!u.alive) {
-        s.selectedUnit = null;
+      const squad = this.squad();
+      if (!squad.length) {
+        this.clearCommand();
         return;
       }
       if (HJ.Map.occupant(s, col, row) || HJ.Map.overlapsAnyBase(s.map, col, row, 1)) {
@@ -151,10 +247,15 @@ HJ.Input = {
         return;
       }
 
-      u.homeX = col + 0.5;
-      u.homeY = row + 0.5;
-      s.selectedUnit = null;
-      HJ.HUD.toast(u.name + ' 换防');
+      const leader = s.selectedUnit;
+      /* 全队开往同一点，靠行走时的分离力散开；领队负责取消选择 */
+      for (const m of squad) {
+        m.homeX = col + 0.5;
+        m.homeY = row + 0.5;
+      }
+      const msg = squad.length > 1 ? squad.length + ' 个单位换防' : (leader.name || '单位') + ' 换防';
+      this.clearCommand();
+      HJ.HUD.toast(msg);
       HJ.HUD.update(true);
       return;
     }
@@ -167,16 +268,62 @@ HJ.Input = {
     if (hit.length) {
       /* 一格里有好几个就选离点击点最近的那个 */
       hit.sort((a, b) => HJ.Utils.dist2(a.x, a.y, px, py) - HJ.Utils.dist2(b.x, b.y, px, py));
-      s.selectedUnit = hit[0];
+      this.selectUnit(hit[0], null);
       HJ.HUD.toast(hit[0].name + '：点地图指定新阵地');
     } else {
-      s.selectedUnit = null;
+      this.clearCommand();
     }
     HJ.HUD.update(true);
   },
 
-  onRightClick(e, canvas) {
+  /* ---------------- 指挥小队 ---------------- */
+
+  /** 当前被指挥的单位：领队 + 「全选同类」进来的同伴 */
+  squad() {
     const s = this.state;
+    if (!s.selectedUnit || !s.selectedUnit.alive) return [];
+    const list = (s.squad || []).filter(u => u.alive && u.canMove);
+    return list.length ? list : [s.selectedUnit];
+  },
+
+  selectUnit(u, companions) {
+    const s = this.state;
+    s.selectedUnit = u;
+    s.selected = null;
+    s.squad = companions || [u];
+  },
+
+  clearCommand() {
+    const s = this.state;
+    s.selected = null;
+    s.selectedUnit = null;
+    s.squad = [];
+  },
+
+  /**
+   * 全选同类：手机上没有拖框多选，用「选一个 → 按同类」把同型号全收进指挥。
+   * 没选中单位时相当于「全选所有能动的」，方便一键把防线整体后撤。
+   */
+  selectSameType() {
+    const s = this.state;
+    const pool = s.defenders.filter(u => u.alive && u.canMove);
+    if (!pool.length) {
+      HJ.HUD.toast('场上没有可指挥的单位', true);
+      return;
+    }
+    const leader = (s.selectedUnit && s.selectedUnit.alive) ? s.selectedUnit : null;
+    const squad = leader ? pool.filter(u => u.defId === leader.defId) : pool;
+    this.selectUnit(leader || squad[0], squad);
+    HJ.HUD.toast('已选 ' + squad.length + ' 个' + (leader ? leader.name : '单位') + '：点地图指定新阵地');
+    HJ.HUD.update(true);
+  },
+
+  onRightClick(e) {
+    const s = this.state;
+
+    /* 触屏长按也会派生 contextmenu，那是"我想看看这是什么"，
+       不是"帮我把这座建筑拆了" */
+    if (this.lastPointer && this.lastPointer !== 'mouse') return;
 
     if (s.selected) {
       s.selected = null;
@@ -187,12 +334,12 @@ HJ.Input = {
     /* 选中单位时，右键是"取消"，不是"拆掉它" —— 这个必须分清，
        否则玩家想取消选择却把自己人拆了 */
     if (s.selectedUnit) {
-      s.selectedUnit = null;
+      this.clearCommand();
       HJ.HUD.update(true);
       return;
     }
 
-    const { col, row } = this.toCell(e, canvas);
+    const { col, row } = this.cellAt(this.local(e.clientX, e.clientY));
 
     /* 建筑可能占好几格，点哪一格都要能拆到它 */
     let target = HJ.Map.occupant(s, col, row);
@@ -214,16 +361,13 @@ HJ.Input = {
   },
 
   onKey(e) {
-    const s = this.state;
-
     if (e.code === 'Space') {
       e.preventDefault();
       this.togglePause();
       return;
     }
     if (e.code === 'Escape') {
-      s.selected = null;
-      s.selectedUnit = null;
+      this.clearCommand();
       HJ.HUD.update(true);
       return;
     }

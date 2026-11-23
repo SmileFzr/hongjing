@@ -172,16 +172,36 @@ main {
   border-top: 1px solid var(--line-soft);
 }
 
-/* ---------- 窄屏兜底 ---------- */
+/* ---------- 分组标签：窄屏才用得上，宽屏竖排全展开 ---------- */
 
-@media (max-width: 900px) {
-  main { flex-direction: column; }
-  #sidebar {
-    width: 100%;
-    flex: 0 0 180px;
-    border-left: none;
-    border-top: 1px solid var(--line);
-  }
-  .stats { flex-wrap: wrap; }
-  .brand .ver { display: none; }
+.tabs { display: none; }
+
+/* ---------- 指挥快捷键（浮在地图上） ---------- */
+
+.cmd-bar {
+  position: absolute;
+  left: 22px;
+  bottom: 22px;
+  display: flex;
+  gap: 6px;
+  z-index: 12;
 }
+
+.cmd {
+  padding: 5px 11px;
+  font-size: 12px;
+  color: var(--muted);
+  background: rgba(15, 20, 16, 0.82);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  transition: color .12s, border-color .12s, opacity .12s;
+}
+
+.cmd:hover { color: var(--gold-2); border-color: var(--gold-dim); }
+.cmd.on { color: var(--gold-2); border-color: var(--gold); }
+.cmd.off { opacity: 0.42; }
+
+/* ---------- 断点覆写 ----------
+   窄屏 / 矮屏的全部覆写集中在 ui.css 末尾。
+   原因：ui.css 在 layout.css 之后加载，卡片、按钮这些组件的
+   padding / margin / display 定义在那边；断点写在两边会互相吃掉。 */

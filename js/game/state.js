@@ -72,6 +72,8 @@ HJ.State = {
       /* 交互 */
       selected: null,
       selectedUnit: null,
+      /* 被指挥的一队：单选时就是它自己，「全选同类」时是一堆同型号 */
+      squad: [],
       hover: { col: -1, row: -1, valid: false },
 
       /* ---------------------------------------------------------

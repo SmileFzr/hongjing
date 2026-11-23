@@ -46,6 +46,10 @@ HJ.Game = {
     HJ.HUD.init(state);
     HJ.Input.attach(state);
 
+    /* 结算时 BGM 被停掉了，重开要接上。
+       还没交互过的时候 Sfx 没 ready，startBGM 自己会跳过 */
+    if (HJ.Sfx) HJ.Sfx.startBGM();
+
     /* 重置顶栏按钮状态 */
     document.getElementById('btn-pause').textContent = '暂停';
     document.getElementById('btn-pause').classList.remove('active');

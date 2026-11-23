@@ -127,6 +127,9 @@
   white-space: nowrap;
 }
 
+/* 属性行：card-spec 是数值，card-meta/card-tags 是定位标签。
+   窄屏只保留名字和造价，横屏右栏还能塞得下 card-spec */
+.card-spec,
 .card-meta {
   font-size: 11px;
   color: var(--dim);
@@ -136,6 +139,7 @@
   flex-wrap: wrap;
 }
 
+.card-spec span,
 .card-meta span { white-space: nowrap; }
 
 /* 兵种定位标签 */
@@ -208,4 +212,195 @@
   font-size: 13px;
   color: var(--muted);
   margin-bottom: 8px;
+}
+
+/* ============================================================
+   响应式断点 —— 全站唯一的覆写区
+   ------------------------------------------------------------
+   ★ 断点必须集中写在这张最后加载的表里：卡片、按钮、分组标题的
+     尺寸定义在上面的基础规则里，写回 layout.css 会被这里覆盖掉。
+   ★ 窄屏 = 侧栏变底部横条，卡片变方砖，一次只显示一组（#tabs 选组）。
+   ★ 横屏矮屏 = 底部横条会压扁地图，改回右侧窄栏。
+   ============================================================ */
+
+@media (max-width: 860px), (max-height: 560px) {
+  /* ---------- 顶栏：两行，第一行标题 + 按钮，第二行四项状态 ---------- */
+
+  #topbar {
+    height: auto;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    padding: calc(6px + env(safe-area-inset-top)) 10px 6px;
+  }
+
+  .brand { font-size: 13px; }
+  .actions { margin-left: auto; }
+
+  /* 手指要按得住，按钮不能还是鼠标那一套尺寸 */
+  .btn { min-height: 32px; padding: 6px 10px; font-size: 12px; }
+
+  .stats { order: 3; flex: 1 1 100%; gap: 4px; }
+  .stat { flex: 1 1 0; min-width: 0; padding: 2px 6px; gap: 4px; }
+  .stat i { font-size: 10px; }
+  /* 数字折行会把顶栏撑成两行高，宁可让它占位一致 */
+  .stat b { font-size: 11px; white-space: nowrap; }
+
+  /* ---------- 主区：地图在上，清单在下 ---------- */
+
+  main { flex-direction: column; }
+  #stage { flex: 1 1 auto; min-height: 0; padding: 6px; }
+  /* 画布外沿被 padding 挤进来一点，结算遮罩跟着铺满整个舞台 */
+  .gameover { inset: -6px; }
+
+  .cmd-bar { left: 12px; bottom: 12px; gap: 8px; }
+  .cmd { min-width: 54px; min-height: 42px; font-size: 13px; }
+
+  #sidebar {
+    width: 100%;
+    flex: 0 1 auto;
+    max-height: 44vh;
+    min-height: 0;
+    border-left: none;
+    border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* 底部横条四层：电力 / 选组 / 方砖 / 说明。
+     说明压到最小，方砖吃掉剩余高度，地图才不会被挤扁。 */
+  .side-head { order: 1; padding: 5px 12px; gap: 10px; }
+  .side-power { flex: 0 1 auto; min-width: 0; text-align: right; }
+
+  .tabs {
+    order: 2;
+    display: flex;
+    flex: 0 1 auto;
+    min-width: 0;
+    gap: 6px;
+    margin-left: auto;
+    padding: 0 10px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+
+  .tab {
+    flex: 0 0 auto;
+    padding: 7px 14px;
+    font-size: 13px;
+    color: var(--muted);
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+  }
+  .tab.active {
+    color: var(--gold-2);
+    border-color: var(--gold);
+    background: rgba(201, 162, 39, 0.12);
+  }
+
+  .shop {
+    order: 3;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 8px 10px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .shop::-webkit-scrollbar { height: 5px; }
+
+  .shop-group { display: flex; gap: 8px; margin: 0; flex: 0 0 auto; }
+  .shop-group.tab-hide { display: none; }
+  .shop-group-title { display: none; }
+
+  /* 卡片从"一行说明"变成"一块拇指能戳的方砖"，属性收进 title 里长按看 */
+  .card {
+    flex: 0 0 auto;
+    width: 92px;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 7px 5px;
+    margin: 0;
+    text-align: center;
+    border-left-width: 1px;
+    border-left-color: var(--line);
+  }
+  .card-icon { flex: 0 0 auto; width: 30px; height: 30px; font-size: 13px; margin: 0; }
+  .card-body { width: 100%; }
+  .card-name { flex-direction: column; justify-content: center; gap: 0; font-size: 12px; }
+  .card-cost { font-size: 11px; }
+  .card-spec, .card-meta { display: none; }
+
+  .side-foot {
+    order: 4;
+    flex: 0 0 auto;
+    padding: 4px 12px;
+    max-height: 3.2em;
+    overflow-y: auto;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .side-foot br { display: none; }
+
+  /* 提示语在窄屏可能很长，让它换行而不是戳出屏幕 */
+  .toast {
+    top: 12px;
+    max-width: calc(100% - 24px);
+    padding: 6px 12px;
+    font-size: 12px;
+    white-space: normal;
+    text-align: center;
+  }
+
+  .gameover { gap: 8px; }
+  .go-title { font-size: 22px; }
+  .go-sub { font-size: 12px; text-align: center; padding: 0 22px; }
+  .btn-primary { min-height: 42px; padding: 10px 24px; }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  /* 横屏高度本来就紧，顶栏压回一行 */
+  #topbar { flex-wrap: nowrap; gap: 10px; }
+  .brand { display: none; }
+  .stats { order: 0; flex: 1 1 auto; }
+  .btn { min-height: 28px; padding: 4px 9px; }
+
+  main { flex-direction: row; }
+
+  #sidebar {
+    width: 152px;
+    flex: 0 0 152px;
+    max-height: none;
+    border-left: 1px solid var(--line);
+    border-top: none;
+    padding-bottom: 0;
+  }
+
+  /* 右侧栏够高，直接沿用桌面那套「全部分组竖排滚动」，不再选组 */
+  .tabs { display: none; }
+  .shop { flex-direction: column; align-items: stretch; overflow-x: hidden; overflow-y: auto; padding: 6px 8px; }
+  .shop-group { flex-direction: column; width: 100%; margin: 0 0 8px; }
+  .shop-group.tab-hide { display: flex; }
+  .shop-group-title { display: flex; margin: 0 0 4px; }
+  .card { width: 100%; flex-direction: row; align-items: center; gap: 7px; padding: 4px 6px; margin: 0 0 4px; text-align: left; }
+  .card-icon { width: 24px; height: 24px; font-size: 12px; }
+  .card-name { flex-direction: row; justify-content: space-between; font-size: 12px; }
+  /* 右栏有宽度余量，把属性行（HP / 占地 / 射程）放回来 */
+  .card-spec {
+    display: flex;
+    margin-top: 1px;
+    font-size: 10px;
+    gap: 6px;
+    max-height: 14px;
+    overflow: hidden;
+    white-space: nowrap;
+    flex-wrap: nowrap;
+  }
+
+  .cmd { min-width: 46px; min-height: 34px; font-size: 12px; }
 }

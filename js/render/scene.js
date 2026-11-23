@@ -610,12 +610,18 @@ HJ.Scene = {
     if (!u || !u.alive) return;
 
     const U = this.U();
+
+    /* 选框比精灵大一圈，别压着轮廓 —— 轮廓就是单位的身份。
+       全选同类时每个都要框出来，否则玩家不知道到底选上了谁。 */
+    const squad = (state.squad || []).filter(m => m.alive);
+    if (!squad.length) squad.push(u);
+    for (const m of squad) {
+      const p = HJ.View.toScreen(m.x, m.y);
+      const side = m.kind === 'vehicle' ? 19 : 15;
+      this.brackets(ctx, p.x, p.y, side, side, U, '#D9A441', 4);
+    }
+
     const p = HJ.View.toScreen(u.x, u.y);
-
-    /* 选框比精灵大一圈，别压着轮廓 —— 轮廓就是单位的身份 */
-    const side = u.kind === 'vehicle' ? 19 : 15;
-    this.brackets(ctx, p.x, p.y, side, side, U, '#D9A441', 4);
-
     const hp = HJ.View.toScreen(u.homeX, u.homeY);
     const col = 'rgba(217, 164, 65, 0.85)';
 

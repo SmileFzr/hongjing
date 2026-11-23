@@ -47,6 +47,13 @@ HJ.View = {
     this.canvas = canvas;
     this.resize();
     window.addEventListener('resize', () => this.resize());
+
+    /* 侧栏换行、字体加载完、屏幕转向这些都会改变画布容器的大小，
+       但其中只有一部分会触发 window resize。盯着容器本身最省事。 */
+    if (window.ResizeObserver && canvas.parentElement) {
+      this._ro = new ResizeObserver(() => this.resize());
+      this._ro.observe(canvas.parentElement);
+    }
   },
 
   /* 画布铺满它的容器，内部分辨率按整数 dpr 放大 */
@@ -55,11 +62,27 @@ HJ.View = {
     if (!cv) return;
 
     const parent = cv.parentElement;
-    const cssW = Math.max(1, (parent ? parent.clientWidth : cv.clientWidth) || 640);
-    const cssH = Math.max(1, (parent ? parent.clientHeight : cv.clientHeight) || 480);
+    let cssW, cssH;
+    if (parent) {
+      /* clientWidth 是含 padding 的，画布只能占内容区，
+         否则会把容器留白整个盖掉，窄屏上还会溢出一截 */
+      const cs = window.getComputedStyle(parent);
+      cssW = parent.clientWidth - this.px(cs.paddingLeft) - this.px(cs.paddingRight);
+      cssH = parent.clientHeight - this.px(cs.paddingTop) - this.px(cs.paddingBottom);
+    } else {
+      cssW = cv.clientWidth;
+      cssH = cv.clientHeight;
+    }
+    cssW = Math.floor(cssW) || 640;
+    cssH = Math.floor(cssH) || 480;
 
     const raw = window.devicePixelRatio || 1;
-    this.dpr = Math.min(3, Math.max(1, Math.round(raw)));
+    const dpr = Math.min(3, Math.max(1, Math.round(raw)));
+
+    if (cssW === this._cssW && cssH === this._cssH && dpr === this.dpr) return;
+    this._cssW = cssW;
+    this._cssH = cssH;
+    this.dpr = dpr;
 
     this.vw = Math.floor(cssW * this.dpr);
     this.vh = Math.floor(cssH * this.dpr);
@@ -69,6 +92,11 @@ HJ.View = {
     cv.style.height = cssH + 'px';
 
     this.clamp();
+  },
+
+  px(v) {
+    const n = parseFloat(v);
+    return isNaN(n) ? 0 : n;
   },
 
   /** 屏幕上一格占多少设备像素 */

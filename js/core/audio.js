@@ -256,6 +256,13 @@ HJ.Sfx = {
     tick();
   },
 
+  stopBGM() {
+    if (this.bgmTimer) {
+      clearTimeout(this.bgmTimer);
+      this.bgmTimer = null;
+    }
+  },
+
   toggle() {
     this.muted = !this.muted;
     if (this.master) {

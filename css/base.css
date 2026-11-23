@@ -50,6 +50,12 @@ html, body {
   line-height: 1.5;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  /* 手机上：双指是给地图用的，下拉刷新和长按选字都会跟游戏打架 */
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 button {
@@ -57,9 +63,14 @@ button {
   font-size: inherit;
   color: inherit;
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 canvas { display: block; }
+
+/* 画布自己处理平移和缩放，浏览器不要再插手手势；
+   iOS 长按不弹「存储图像 / 复制」菜单 */
+#game { touch-action: none; -webkit-touch-callout: none; }
 
 .hidden { display: none !important; }
 

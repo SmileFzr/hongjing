@@ -3,6 +3,10 @@
    ------------------------------------------------------------
    建造清单只在开局构建一次，之后每帧只切换 class，
    避免频繁重建 DOM 导致 hover 状态闪断。
+
+   窄屏（手机）下侧栏变成底部横条，一次只显示一组，
+   由 #tabs 决定显示哪一组；宽屏时 #tabs 隐藏、全组竖排。
+   分组隐藏只写在紧凑断点里，所以横竖屏来回切不会把清单搞丢。
    ============================================================ */
 
 window.HJ = window.HJ || {};
@@ -10,23 +14,81 @@ window.HJ = window.HJ || {};
 HJ.HUD = {
   state: null,
   cards: {},        // id -> { el, costEl }
+  groups: {},       // 组名 -> 元素
+  tab: '全部',
+  compact: false,
   lastMoney: -1,
   lastUpdate: 0,
   toastTimer: 0,
 
+  /* 和 layout.css 的紧凑断点保持一致 */
+  MQ_COMPACT: '(max-width: 860px), (max-height: 560px)',
+
   init(state) {
     this.state = state;
     this.cards = {};
+    this.groups = {};
     this.lastMoney = -1;
 
     document.getElementById('gameover').classList.add('hidden');
     document.getElementById('toast').classList.remove('show');
 
+    this.compact = window.matchMedia(this.MQ_COMPACT).matches;
     this.buildShop();
+    this.buildTabs();
+    /* 窄屏一次只显示一组，开局停在第一组；宽屏全部竖排显示 */
+    this.setTab(this.compact ? Object.keys(HJ.BuildOrder)[0] : '全部');
+    this.resetHint();
+    this.syncCommands();
     this.update(true);
+
+    if (!this._bound) {
+      this._bound = true;
+      window.addEventListener('resize', () => this.onResize());
+    }
+  },
+
+  onResize() {
+    const compact = window.matchMedia(this.MQ_COMPACT).matches;
+    if (compact === this.compact) return;
+    this.compact = compact;
+    this.setTab(compact ? Object.keys(HJ.BuildOrder)[0] : '全部');
+    this.resetHint();
+  },
+
+  HINT_MOUSE: '选中一项后点击地图放置；点己方单位可指挥换防，右键取消或拆除。',
+  HINT_TOUCH: '单指拖动平移 · 双指缩放 · 轻点放置。点己方单位后轻点新位置换防，「同类」收齐同型号。',
+
+  resetHint() {
+    const el = document.getElementById('side-hint');
+    if (el) el.textContent = this.compact ? this.HINT_TOUCH : this.HINT_MOUSE;
   },
 
   /* ---------------- 建造清单 ---------------- */
+
+  buildTabs() {
+    const bar = document.getElementById('tabs');
+    if (!bar) return;
+    bar.innerHTML = '';
+    for (const name of ['全部'].concat(Object.keys(HJ.BuildOrder))) {
+      const b = document.createElement('button');
+      b.className = 'tab';
+      b.textContent = name;
+      b.dataset.name = name;
+      b.addEventListener('click', () => this.setTab(name));
+      bar.appendChild(b);
+    }
+  },
+
+  setTab(name) {
+    this.tab = name;
+    for (const g in this.groups) {
+      this.groups[g].classList.toggle('tab-hide', name !== '全部' && g !== name);
+    }
+    const bar = document.getElementById('tabs');
+    if (!bar) return;
+    for (const b of bar.children) b.classList.toggle('active', b.dataset.name === name);
+  },
 
   buildShop() {
     const shop = document.getElementById('shop');
@@ -50,6 +112,7 @@ HJ.HUD = {
 
       const group = document.createElement('div');
       group.className = 'shop-group';
+      this.groups[groupName] = group;
 
       const title = document.createElement('div');
       title.className = 'shop-group-title';
@@ -83,7 +146,7 @@ HJ.HUD = {
         nameRow.appendChild(costSpan);
 
         const meta = document.createElement('div');
-        meta.className = 'card-meta';
+        meta.className = 'card-spec';
         const chips = ['HP ' + d.hp];
         /* 建筑尺寸必须让玩家看见 —— 3×3 和 1×1 在战术上完全是两种东西 */
         if (d.kind === 'building') chips.push((d.size || 1) + '×' + (d.size || 1));
@@ -105,7 +168,7 @@ HJ.HUD = {
 
         if (d.tags && d.tags.length) {
           const tagRow = document.createElement('div');
-          tagRow.className = 'card-meta';
+          tagRow.className = 'card-meta card-tags';
           for (const t of d.tags) {
             const tag = document.createElement('span');
             tag.className = 'tag ' + (tagClass[t] || '');
@@ -134,6 +197,9 @@ HJ.HUD = {
 
   onCardClick(id) {
     const s = this.state;
+    const d = HJ.Units[id];
+    /* 手指没有 hover，说明文字必须跟着点击一起出来 */
+    this.showHint(d);
     if (!HJ.Economy.isUnlocked(s, id)) {
       const need = HJ.Units[HJ.Units[id].unlock];
       this.toast('需要先造' + (need ? need.name : '前置建筑'), true);
@@ -143,9 +209,11 @@ HJ.HUD = {
       this.toast('资金不足', true);
       return;
     }
-    s.selected = (s.selected === id) ? null : id;
+    /* 再点一次同一张卡 = 取消，手机上没有右键 */
+    const want = (s.selected === id) ? null : id;
     /* 开始选建筑就意味着放弃单位指挥，两种选中不能同时存在 */
-    s.selectedUnit = null;
+    HJ.Input.clearCommand();
+    s.selected = want;
     this.update(true);
   },
 
@@ -155,6 +223,15 @@ HJ.HUD = {
     el.textContent = d.desc || '';
   },
 
+  /* 指挥按钮的可用性：没有选中任何东西时按了也没意义 */
+  syncCommands() {
+    const s = this.state;
+    const cancel = document.getElementById('cmd-cancel');
+    const same = document.getElementById('cmd-same');
+    if (cancel) cancel.classList.toggle('off', !(s && (s.selected || s.selectedUnit)));
+    if (same) same.classList.toggle('on', !!(s && s.selectedUnit));
+  },
+
   /* ---------------- 每帧刷新 ---------------- */
 
   update(force) {
@@ -162,6 +239,9 @@ HJ.HUD = {
     const now = performance.now();
     if (!force && now - this.lastUpdate < 90) return;
     this.lastUpdate = now;
+
+    /* 领队被打掉之后，整个指挥状态都要跟着清 */
+    if (s.selectedUnit && !s.selectedUnit.alive) HJ.Input.clearCommand();
 
     /* 顶栏 */
     const moneyEl = document.getElementById('s-money');
@@ -176,14 +256,19 @@ HJ.HUD = {
     }
     this.lastMoney = s.money;
 
-    document.getElementById('s-power').textContent = s.usedPower + ' / ' + s.totalPower;
+    document.getElementById('s-power').textContent = s.usedPower + '/' + s.totalPower;
     document.getElementById('stat-power-box').classList.toggle('low', s.lowPower);
 
+    /* 这一格两种语义：开波后是进度，备战时是倒计时。
+       标签跟着换，玩家才知道那个数字是什么，数字本身也短一半 */
     const waveEl = document.getElementById('s-wave');
+    const waveLabel = document.getElementById('s-wave-label');
     if (s.waveActive) {
-      waveEl.textContent = (s.waveIndex + 1) + ' / ' + HJ.Waves.length;
+      if (waveLabel) waveLabel.textContent = '波次';
+      waveEl.textContent = (s.waveIndex + 1) + '/' + HJ.Waves.length;
     } else if (!s.over) {
-      waveEl.textContent = Math.ceil(Math.max(0, s.prepTimer)) + 's · ' + (s.waveIndex + 1) + '/' + HJ.Waves.length;
+      if (waveLabel) waveLabel.textContent = '下一波';
+      waveEl.textContent = Math.ceil(Math.max(0, s.prepTimer)) + 's';
     }
 
     const basePct = Math.max(0, Math.round((s.base.hp / s.base.maxHp) * 100));
@@ -205,6 +290,7 @@ HJ.HUD = {
       c.el.classList.toggle('selected', s.selected === id);
       c.costEl.style.color = afford ? '' : 'var(--red)';
     }
+    this.syncCommands();
   },
 
   /* ---------------- 提示 ---------------- */
@@ -221,7 +307,11 @@ HJ.HUD = {
   /* ---------------- 结算 ---------------- */
 
   gameOver(state, waveIndex, won) {
-    if (HJ.Sfx) HJ.Sfx.play(won ? 'win' : 'lose');
+    if (HJ.Sfx) {
+      HJ.Sfx.play(won ? 'win' : 'lose');
+      /* 结算音要盖过 BGM，先把循环停掉，否则失败画面还在打仗 */
+      HJ.Sfx.stopBGM();
+    }
     const box = document.getElementById('gameover');
     box.classList.remove('hidden');
 
