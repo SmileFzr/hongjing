@@ -10,6 +10,13 @@ HJ.Config = {
   /* 地图是数据（见 data/maps.js），尺寸一律读 state.map，不在这里写死。
      格子像素也不在这里：相机和投影全在 core/view.js。 */
   DEFAULT_MAP: 'defense',
+  DEFAULT_MODE: 'defense',
+
+  MODES: {
+    defense: { name: '经典塔防', short: '塔防', desc: '守住基地，清空 12 波进攻' },
+    skirmish: { name: '遭遇战', short: '遭遇', desc: '展开 MCV，建造部队并摧毁敌方基地' },
+    endless: { name: '无尽塔防', short: '无尽', desc: '12 波后敌人持续增强，挑战极限防线' },
+  },
 
   /* --- 战斗 --- */
   TICK: 1 / 60,      // 逻辑固定步长（秒），与渲染帧率解耦
@@ -17,7 +24,10 @@ HJ.Config = {
 
   /* --- 开局 --- */
   START_MONEY: 5000,
+  SKIRMISH_MONEY: 6000,
+  SKIRMISH_INCOME: 16,
   BASE_HP: 8000,
+  SKIRMISH_BASE_HP: 12000,
   /* 敌人啃基地的伤害折扣。以前给 0.35，结果 20 个步兵要拆五分钟，
      整局拖成拉锯战。现在是 1.0：漏怪就要立刻见血 */
   BASE_DAMAGE_MUL: 1.0,
@@ -39,5 +49,7 @@ HJ.Config = {
 
   /* --- 其他 --- */
   SELL_RATE: 0.5,        // 拆除返还比例
+  MAX_QUEUE: 12,
+  QUEUE_REFUND: 1,
   GRID_DEBUG: false,     // 按 F 打开的流场热力图开关（开发用）
 };

@@ -157,6 +157,27 @@ main {
 }
 .side-power.low { color: var(--warn); }
 
+.map-picker {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#map-select {
+  min-width: 0;
+  max-width: 132px;
+  padding: 3px 6px;
+  color: var(--gold-2);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-size: 12px;
+}
+
 .shop {
   flex: 1;
   overflow-y: auto;

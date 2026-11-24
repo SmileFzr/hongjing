@@ -70,7 +70,23 @@ HJ.Map = {
       bases: bases,
       entrances: (desc.entrances || []).map(e => ({ ...e })),
       keepClear: desc.keepClear || 0,
+      start: desc.start || null,
+      demo: desc.demo || null,
+      starts: desc.starts || null,
     };
+  },
+
+  addBase(map, side, col, row, size) {
+    const s = size || 4;
+    const base = {
+      side, col, row, w: s, h: s, size: s,
+      x: col + s / 2, y: row + s / 2,
+      hp: map.mode === 'skirmish' ? HJ.Config.SKIRMISH_BASE_HP : HJ.Config.BASE_HP,
+      maxHp: map.mode === 'skirmish' ? HJ.Config.SKIRMISH_BASE_HP : HJ.Config.BASE_HP,
+      armor: 'building', isBuilding: true, isBase: true, alive: true,
+    };
+    map.bases[side] = base;
+    return base;
   },
 
   /* ---------------- 边界 ---------------- */
@@ -128,6 +144,7 @@ HJ.Map = {
     const n = size || 1;
     for (const side in map.bases) {
       const b = map.bases[side];
+      if (!b || !b.alive) continue;
       if (col < b.col + b.w && col + n > b.col &&
           row < b.row + b.h && row + n > b.row) return true;
     }

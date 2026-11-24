@@ -4,9 +4,8 @@
    地形是**数据**，不是代码：字符 → 名称 → 每种移动类别的代价倍数。
    寻路只问两个问题：这一格走多少倍代价（cost）、能不能走（passable）。
 
-   P1a 只有平地，代价恒 1 —— 流场结果与重构前逐格相同，
-   这样分侧重构有没有改坏行为，一跑 tools/simulate.js 就知道。
-   P2 把 river / bridge / rock / road / sand / forest 填进这张表。
+   原 defense 图只有平地，代价恒 1，作为回归基准。
+   其他地图使用 road / sand / forest / rock / water / bridge。
 
    移动类别（moveClass）：
      foot    步兵，能爬山能过河？（按表定）
@@ -19,6 +18,13 @@ HJ.Terrain = {
   /* 顺序就是地形 id（存进 Uint8Array 的数字），改顺序会作废已存的地图数据 */
   list: [
     { ch: '.', id: 'plain', name: '平地', cost: { foot: 1, track: 1 } },
+    { ch: 'g', id: 'grass', name: '草地', cost: { foot: 1, track: 1 } },
+    { ch: 's', id: 'sand', name: '沙地', cost: { foot: 1.25, track: 1.55 } },
+    { ch: 'r', id: 'road', name: '公路', cost: { foot: 0.78, track: 0.72 } },
+    { ch: 'f', id: 'forest', name: '森林', cost: { foot: 1.55, track: 2.1 } },
+    { ch: 'o', id: 'rock', name: '岩地', cost: { foot: Infinity, track: Infinity } },
+    { ch: '~', id: 'water', name: '河流', cost: { foot: Infinity, track: Infinity } },
+    { ch: '=', id: 'bridge', name: '桥梁', cost: { foot: 0.85, track: 0.8 } },
   ],
 
   byCh: {},

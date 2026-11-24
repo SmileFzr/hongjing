@@ -23,6 +23,20 @@ HJ.Sfx = {
   bgmTimer: null,
   bgmStep: 0,
   last: {},
+  timers: new Set(),
+
+  later(fn, ms) {
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
+      fn();
+    }, ms);
+    this.timers.add(timer);
+  },
+
+  clearDelayed() {
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
+  },
 
   /* ---------------- 初始化 ---------------- */
 
@@ -155,7 +169,7 @@ HJ.Sfx = {
 
       case 'build':
         this.tone(392, 0.09, 'triangle', 0.16);
-        setTimeout(() => this.tone(523, 0.12, 'triangle', 0.16), 85);
+        this.later(() => this.tone(523, 0.12, 'triangle', 0.16), 85);
         break;
 
       case 'sell':
@@ -164,17 +178,17 @@ HJ.Sfx = {
 
       case 'levelup':
         this.tone(659, 0.09, 'triangle', 0.17);
-        setTimeout(() => this.tone(988, 0.15, 'triangle', 0.17), 85);
+        this.later(() => this.tone(988, 0.15, 'triangle', 0.17), 85);
         break;
 
       case 'wave':
         this.tone(98, 0.42, 'sawtooth', 0.22);
-        setTimeout(() => this.tone(147, 0.5, 'sawtooth', 0.2), 230);
+        this.later(() => this.tone(147, 0.5, 'sawtooth', 0.2), 230);
         break;
 
       case 'alarm':
         this.tone(440, 0.14, 'square', 0.14);
-        setTimeout(() => this.tone(330, 0.14, 'square', 0.14), 160);
+        this.later(() => this.tone(330, 0.14, 'square', 0.14), 160);
         break;
 
       case 'click':
@@ -183,13 +197,13 @@ HJ.Sfx = {
 
       case 'win':
         [523, 659, 784, 1047].forEach((f, i) => {
-          setTimeout(() => this.tone(f, 0.3, 'triangle', 0.2), i * 130);
+          this.later(() => this.tone(f, 0.3, 'triangle', 0.2), i * 130);
         });
         break;
 
       case 'lose':
         [392, 330, 262, 196].forEach((f, i) => {
-          setTimeout(() => this.tone(f, 0.36, 'sawtooth', 0.18), i * 180);
+          this.later(() => this.tone(f, 0.36, 'sawtooth', 0.18), i * 180);
         });
         break;
 

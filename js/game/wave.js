@@ -10,7 +10,7 @@ window.HJ = window.HJ || {};
 
 HJ.Wave = {
   update(state, dt) {
-    if (state.over) return;
+    if (state.over || state.mode === 'skirmish') return;
 
     /* ---- 准备阶段 ---- */
     if (!state.waveActive) {
@@ -23,7 +23,7 @@ HJ.Wave = {
     state.waveClock += dt;
     while (state.spawnQueue.length && state.spawnQueue[0].at <= state.waveClock) {
       const s = state.spawnQueue.shift();
-      HJ.State.spawnEnemy(state, s.id, s.from);
+      HJ.State.spawnEnemy(state, s.id, s.from, s.scale);
     }
 
     /* ---- 清空判定 ---- */
@@ -32,10 +32,25 @@ HJ.Wave = {
     }
   },
 
-  start(state) {
-    const w = HJ.Waves[state.waveIndex];
-    if (!w) return;
+  waveAt(state) {
+    if (state.waveIndex < HJ.Waves.length) return HJ.Waves[state.waveIndex];
+    const level = state.waveIndex - HJ.Waves.length + 1;
+    return {
+      name: '无尽浪潮 ' + level,
+      entries: state.map.entrances.map(e => e.id),
+      scale: Math.min(4, 1 + level * 0.09),
+      spawns: [
+        { id: 'conscript', n: Math.min(36, 10 + level * 2), gap: Math.max(0.16, 0.4 - level * 0.012) },
+        { id: 'rhino', n: Math.min(24, 4 + Math.floor(level * 0.8)), gap: Math.max(0.5, 1.6 - level * 0.04), delay: 2 },
+        { id: 'terror', n: Math.min(14, Math.floor(level * 0.7)), gap: 0.7, delay: 4 },
+        { id: 'apocalypse', n: Math.min(10, 1 + Math.floor(level / 3)), gap: 2.4, delay: 8 },
+      ],
+    };
+  },
 
+  start(state) {
+    const w = this.waveAt(state);
+    state.currentWave = w;
     state.waveActive = true;
     state.waveClock = 0;
     if (HJ.Sfx) HJ.Sfx.play('wave');
@@ -51,9 +66,9 @@ HJ.Wave = {
     state.waveIndex++;
 
     const bonus = HJ.Economy.waveBonus(state);
-    state.prepTimer = HJ.WAVE_PREP_TIME;
+    state.prepTimer = state.mode === 'endless' && state.waveIndex >= HJ.Waves.length ? 15 : HJ.WAVE_PREP_TIME;
 
-    if (state.waveIndex >= HJ.Waves.length) {
+    if (state.mode === 'defense' && state.waveIndex >= HJ.Waves.length) {
       state.won = true;
       state.over = true;
       if (HJ.HUD) HJ.HUD.gameOver(state, state.waveIndex, true);
@@ -83,6 +98,7 @@ HJ.Wave = {
           id: s.id,
           at: start + i * gap,
           from: HJ.Utils.pick(entries),
+          scale: wave.scale || 1,
         });
       }
     }

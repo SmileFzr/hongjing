@@ -58,6 +58,8 @@ HJ.Input = {
     on('btn-speed', () => this.toggleSpeed());
     on('btn-restart', () => HJ.Game.restart());
     on('btn-again', () => HJ.Game.restart());
+    on('btn-title', () => HJ.Game.showTitle());
+    on('btn-go-title', () => HJ.Game.showTitle());
 
     /* 手机上的指挥按钮：没有右键和 Esc，得给个能按的地方 */
     on('cmd-cancel', () => {
@@ -66,6 +68,7 @@ HJ.Input = {
     });
     on('cmd-same', () => this.selectSameType());
     on('cmd-home', () => this.focusBase());
+    on('cmd-sell', () => this.toggleSell());
   },
 
   /* ---------------- 指针 ---------------- */
@@ -86,6 +89,7 @@ HJ.Input = {
       this.lastPointer = e.pointerType;
       const p = this.local(e.clientX, e.clientY);
       P.set(e.pointerId, { x: p.x, y: p.y, ox: p.x, oy: p.y, moved: false });
+      if (e.pointerType !== 'mouse' && P.size === 1) this.hoverAt(p);
 
       if (P.size === 2) this.beginPinch();
       if (P.size > 1) this.multiTouch = true;
@@ -108,6 +112,7 @@ HJ.Input = {
       rec.y = p.y;
       const slop = this.TAP_SLOP * HJ.View.dpr;
       if (!rec.moved && Math.hypot(p.x - rec.ox, p.y - rec.oy) > slop) rec.moved = true;
+      if (e.pointerType !== 'mouse' && !rec.moved && P.size === 1) this.hoverAt(p);
 
       if (P.size >= 2) { this.updatePinch(); return; }
       if (rec.moved) HJ.View.panBy(dx, dy);
@@ -124,8 +129,13 @@ HJ.Input = {
         this.multiTouch = false;
       }
     };
+    const cancel = (e) => {
+      P.delete(e.pointerId);
+      if (P.size < 2) this.pinch = null;
+      if (P.size === 0) this.multiTouch = false;
+    };
     canvas.addEventListener('pointerup', release);
-    canvas.addEventListener('pointercancel', release);
+    canvas.addEventListener('pointercancel', cancel);
 
     canvas.addEventListener('mouseleave', () => {
       if (!this.state) return;
@@ -143,6 +153,10 @@ HJ.Input = {
   /* ---------------- 相机手势 ---------------- */
 
   beginPinch() {
+    if (this.state) {
+      this.state.hover.col = -1;
+      this.state.hover.row = -1;
+    }
     const it = Array.from(this.pointers.values());
     const a = it[0], b = it[1];
     this.pinch = {
@@ -176,7 +190,15 @@ HJ.Input = {
   focusBase() {
     const s = this.state;
     HJ.View.setMap(s.map, 'player');
-    HJ.HUD.toast('回到基地');
+    if (!s.base) {
+      const mcv = s.defenders.find(u => u.alive && u.deployable);
+      if (mcv) {
+        HJ.View.x = mcv.x;
+        HJ.View.y = mcv.y;
+        HJ.View.clamp();
+      }
+    }
+    HJ.HUD.toast(s.base ? '回到基地' : '回到 MCV');
   },
 
   /* ---------------- 坐标与选中 ---------------- */
@@ -185,6 +207,22 @@ HJ.Input = {
   cellAt(p) {
     const w = HJ.View.toWorld(p.x, p.y);
     return { col: Math.floor(w.x), row: Math.floor(w.y) };
+  },
+
+  /** 连续坐标命中：精灵可以越过格子中心，不能只按 col/row 选。 */
+  unitAt(x, y) {
+    let best = null;
+    let bestD = 0.65 * 0.65;
+    for (const u of this.state.defenders) {
+      if (!u.alive || !u.canMove) continue;
+      const d = HJ.Utils.dist2(u.x, u.y, x, y);
+      const reach = u.defId === 'mcv' ? 1.15 : 0.65;
+      if (d <= reach * reach && d <= bestD) {
+        bestD = d;
+        best = u;
+      }
+    }
+    return best;
   },
 
   hoverAt(p) {
@@ -197,18 +235,24 @@ HJ.Input = {
     s.hover.col = col;
     s.hover.row = row;
 
-    if (s.selected) {
+    if (s.sellMode) {
+      const target = HJ.Map.occupant(s, col, row);
+      s.hover.valid = !!(target && target.side === 'player');
+    } else if (s.deployMode && s.selectedUnit) {
+      s.hover.valid = HJ.Economy.canDeployMCV(s, s.selectedUnit, col, row);
+    } else if (s.selected) {
       const d = HJ.Units[s.selected];
       const n = d ? (d.size || 1) : 1;
       s.hover.valid = HJ.Economy.isCellFree(s, col, row, n)
         && HJ.Economy.isUnlocked(s, s.selected)
         && HJ.Economy.canAfford(s, s.selected);
     } else if (s.selectedUnit) {
-      /* 指挥移动：目标格不能被建筑或任何一侧的基地占着 */
-      s.hover.valid = !HJ.Map.occupant(s, col, row) && !HJ.Map.overlapsAnyBase(s.map, col, row, 1);
+      /* 指挥移动：目标格不能被建筑、基地或不可通行地形占着 */
+      s.hover.valid = HJ.Battle.canWalkAt(s, s.selectedUnit, col + 0.5, row + 0.5);
     } else {
       s.hover.valid = false;
     }
+    if (HJ.HUD) HJ.HUD.syncHint();
   },
 
   /* ---------------- 轻点 / 左键 ---------------- */
@@ -220,9 +264,26 @@ HJ.Input = {
     const { col, row } = this.cellAt(p);
     if (col < 0 || row < 0 || col >= s.map.cols || row >= s.map.rows) return;
 
+    /* ---- 拆除模式：一次只拆一栋，避免手指连点误拆整片防线 ---- */
+    if (s.sellMode) {
+      const target = HJ.Map.occupant(s, col, row);
+      s.sellMode = false;
+      if (target && target.side === 'player' && target.isBuilding) {
+        const back = Math.floor(target.cost * HJ.Config.SELL_RATE);
+        HJ.Economy.demolish(s, target);
+        HJ.HUD.toast('已拆除 ' + target.name + '（返还 ' + back + '）');
+      } else if (target) {
+        HJ.HUD.toast('只能拆除己方建筑', true);
+      } else {
+        HJ.HUD.toast('这里没有己方建筑', true);
+      }
+      HJ.HUD.update(true);
+      return;
+    }
+
     /* ---- 优先级 1：正在放置建筑 ---- */
     if (s.selected) {
-      const res = HJ.Economy.build(s, s.selected, col, row);
+      const res = HJ.Economy.queueBuilding(s, s.selected, col, row);
       if (!res.ok) {
         HJ.HUD.toast(res.reason, true);
         return;
@@ -235,6 +296,19 @@ HJ.Input = {
       return;
     }
 
+    if (s.deployMode && s.selectedUnit) {
+      const res = HJ.Economy.deployMCV(s, s.selectedUnit, col, row);
+      if (!res.ok) {
+        HJ.HUD.toast(res.reason, true);
+        return;
+      }
+      this.clearCommand();
+      HJ.HUD.toast('基地展开完成');
+      HJ.View.setMap(s.map, 'player');
+      HJ.HUD.update(true);
+      return;
+    }
+
     /* ---- 优先级 2：已经选中单位，这一下是指定新阵地 ---- */
     if (s.selectedUnit) {
       const squad = this.squad();
@@ -242,16 +316,23 @@ HJ.Input = {
         this.clearCommand();
         return;
       }
-      if (HJ.Map.occupant(s, col, row) || HJ.Map.overlapsAnyBase(s.map, col, row, 1)) {
+      if (!HJ.Battle.canWalkAt(s, s.selectedUnit, col + 0.5, row + 0.5)) {
         HJ.HUD.toast('那里放不下', true);
         return;
       }
 
+      const slots = this.formation(squad, col, row);
+      if (!slots) {
+        HJ.HUD.toast('附近没有足够空地容纳整队', true);
+        return;
+      }
       const leader = s.selectedUnit;
-      /* 全队开往同一点，靠行走时的分离力散开；领队负责取消选择 */
-      for (const m of squad) {
-        m.homeX = col + 0.5;
-        m.homeY = row + 0.5;
+      const others = squad.filter(m => m !== leader);
+      leader.homeX = slots[0].x;
+      leader.homeY = slots[0].y;
+      for (let i = 0; i < others.length; i++) {
+        others[i].homeX = slots[i + 1].x;
+        others[i].homeY = slots[i + 1].y;
       }
       const msg = squad.length > 1 ? squad.length + ' 个单位换防' : (leader.name || '单位') + ' 换防';
       this.clearCommand();
@@ -261,17 +342,19 @@ HJ.Input = {
     }
 
     /* ---- 优先级 3：点到自己人 → 选中它 ---- */
-    const px = col + 0.5;
-    const py = row + 0.5;
-    const hit = s.defenders.filter(u => u.alive && u.canMove && u.col === col && u.row === row);
+    const world = HJ.View.toWorld(p.x, p.y);
+    const hit = this.unitAt(world.x, world.y);
 
-    if (hit.length) {
-      /* 一格里有好几个就选离点击点最近的那个 */
-      hit.sort((a, b) => HJ.Utils.dist2(a.x, a.y, px, py) - HJ.Utils.dist2(b.x, b.y, px, py));
-      this.selectUnit(hit[0], null);
-      HJ.HUD.toast(hit[0].name + '：点地图指定新阵地');
+    if (hit) {
+      this.selectUnit(hit, null);
+      HJ.HUD.toast(hit.deployable ? 'MCV：轻点 4×4 空地展开基地' : hit.name + '：点地图指定新阵地');
     } else {
+      const building = HJ.Map.occupant(s, col, row);
       this.clearCommand();
+      if (building && building.side === 'player') {
+        s.inspected = building;
+        HJ.HUD.toast(building.name + ' · HP ' + Math.ceil(building.hp) + '/' + building.maxHp);
+      }
     }
     HJ.HUD.update(true);
   },
@@ -286,11 +369,40 @@ HJ.Input = {
     return list.length ? list : [s.selectedUnit];
   },
 
+  /** 给整队分配紧凑、互不重叠的格子落点；领队占中心。 */
+  formation(squad, col, row) {
+    const s = this.state;
+    const map = s.map;
+    const cells = [];
+    for (let r = 0; r < map.rows; r++) {
+      for (let c = 0; c < map.cols; c++) {
+        cells.push({ c, r, d: HJ.Utils.dist2(c, r, col, row) });
+      }
+    }
+    cells.sort((a, b) => a.d - b.d || a.r - b.r || a.c - b.c);
+
+    const slots = [];
+    for (const cell of cells) {
+      const x = cell.c + 0.5, y = cell.r + 0.5;
+      let ok = true;
+      for (const m of squad) {
+        if (!HJ.Battle.canWalkAt(s, m, x, y)) { ok = false; break; }
+      }
+      if (!ok) continue;
+      slots.push({ x, y });
+      if (slots.length === squad.length) return slots;
+    }
+    return null;
+  },
+
   selectUnit(u, companions) {
     const s = this.state;
     s.selectedUnit = u;
     s.selected = null;
     s.squad = companions || [u];
+    s.inspected = null;
+    s.sellMode = false;
+    s.deployMode = !!u.deployable && !s.base;
   },
 
   clearCommand() {
@@ -298,6 +410,9 @@ HJ.Input = {
     s.selected = null;
     s.selectedUnit = null;
     s.squad = [];
+    s.inspected = null;
+    s.sellMode = false;
+    s.deployMode = false;
   },
 
   /**
@@ -318,12 +433,31 @@ HJ.Input = {
     HJ.HUD.update(true);
   },
 
+  toggleSell() {
+    const s = this.state;
+    if (s.sellMode) {
+      s.sellMode = false;
+      HJ.HUD.toast('已退出拆除模式');
+    } else {
+      this.clearCommand();
+      s.sellMode = true;
+      HJ.HUD.toast('拆除模式：点己方建筑，返还 50% 造价');
+    }
+    HJ.HUD.update(true);
+  },
+
   onRightClick(e) {
     const s = this.state;
 
     /* 触屏长按也会派生 contextmenu，那是"我想看看这是什么"，
        不是"帮我把这座建筑拆了" */
     if (this.lastPointer && this.lastPointer !== 'mouse') return;
+
+    if (s.sellMode || s.inspected) {
+      this.clearCommand();
+      HJ.HUD.update(true);
+      return;
+    }
 
     if (s.selected) {
       s.selected = null;
@@ -339,15 +473,18 @@ HJ.Input = {
       return;
     }
 
-    const { col, row } = this.cellAt(this.local(e.clientX, e.clientY));
+    const p = this.local(e.clientX, e.clientY);
+    const { col, row } = this.cellAt(p);
 
     /* 建筑可能占好几格，点哪一格都要能拆到它 */
     let target = HJ.Map.occupant(s, col, row);
     if (!target) {
-      target = s.defenders.find(u => u.alive && !u.isBuilding && u.col === col && u.row === row);
+      const world = HJ.View.toWorld(p.x, p.y);
+      target = this.unitAt(world.x, world.y);
     }
 
     if (target) {
+      if (!target.isBuilding) return;
       /* occupied 表里两侧的建筑都有，右键只能拆自己的 */
       if (target.side !== 'player') {
         HJ.HUD.toast('那是对方的建筑', true);
@@ -361,6 +498,7 @@ HJ.Input = {
   },
 
   onKey(e) {
+    if (!this.state) return;
     if (e.code === 'Space') {
       e.preventDefault();
       this.togglePause();
@@ -408,6 +546,7 @@ HJ.Input = {
 
   togglePause() {
     const s = this.state;
+    if (!s) return;
     s.paused = !s.paused;
     document.getElementById('btn-pause').textContent = s.paused ? '继续' : '暂停';
     document.getElementById('btn-pause').classList.toggle('active', s.paused);
@@ -415,6 +554,7 @@ HJ.Input = {
 
   toggleSpeed() {
     const s = this.state;
+    if (!s) return;
     s.speed = s.speed === 1 ? 2 : 1;
     document.getElementById('btn-speed').textContent = s.speed + '×';
     document.getElementById('btn-speed').classList.toggle('active', s.speed === 2);

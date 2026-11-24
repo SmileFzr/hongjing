@@ -134,6 +134,8 @@ HJ.Scene = {
     }
 
     this.drawFlow(ctx);
+    this.drawRoutePreview(ctx, state);
+    this.drawQueue(ctx, state);
     this.drawTracks(ctx, state);
     this.drawEntities(ctx, state);
     this.drawDust(ctx, state);
@@ -153,8 +155,11 @@ HJ.Scene = {
     const onScreen = (c, r) => c >= vis.c0 && c <= vis.c1 && r >= vis.r0 && r <= vis.r1;
 
     const list = [];
-    if (onScreen(state.base.col, state.base.row)) {
-      list.push({ base: true, depth: state.base.row + state.base.h });
+    for (const sideId in state.map.bases) {
+      const base = state.map.bases[sideId];
+      if (base && base.alive && onScreen(base.col, base.row)) {
+        list.push({ base, depth: base.row + base.h });
+      }
     }
 
     for (const u of state.defenders) {
@@ -172,7 +177,7 @@ HJ.Scene = {
     list.sort((a, b) => a.depth - b.depth);
 
     for (const it of list) {
-      if (it.base) this.drawBase(ctx, state);
+      if (it.base) this.drawBase(ctx, it.base);
       else if (it.u.isBuilding) this.drawBuilding(ctx, it.u);
       else this.drawMobile(ctx, it.u, state);
     }
@@ -185,8 +190,7 @@ HJ.Scene = {
 
   /* ---------------- 基地 ---------------- */
 
-  drawBase(ctx, state) {
-    const b = state.base;
+  drawBase(ctx, b) {
     const box = HJ.View.box(b.col, b.row, b.w);
     const U = this.U();
 
@@ -380,6 +384,19 @@ HJ.Scene = {
     }
   },
 
+  drawQueue(ctx, state) {
+    const U = this.U();
+    for (const item of state.sides.player.queue) {
+      const d = HJ.Units[item.defId];
+      if (!d || d.kind !== 'building' || item.col === undefined) continue;
+      const box = HJ.View.box(item.col, item.row, d.size);
+      const progress = 1 - Math.max(0, item.remaining) / item.total;
+      this.brackets(ctx, box.cx, box.cy, d.size * HJ.View.ART - 2, d.size * HJ.View.ART - 2,
+        U, item.remaining > 0 ? '#C9A227' : '#E8A33D', 4);
+      this.hpBar(ctx, box.x + 2 * U, box.y + box.h - 4 * U, box.w - 4 * U, 2 * U, progress, '#C9A227');
+    }
+  },
+
   /* ---------------- 攻击特效 ---------------- */
   /* 按武器分五种手感：步枪曳光弹、坦克炮口闪光+炮弹+爆炸、
      光棱光束、磁暴电弧、谭雅斩击。
@@ -568,11 +585,53 @@ HJ.Scene = {
     }
   },
 
+  drawRoutePreview(ctx, state) {
+    const h = state.hover;
+    if (!state.selected || h.col < 0 || !h.valid || HJ.Units[state.selected].kind !== 'building') return;
+    const preview = HJ.Field.preview(state, h.col, h.row, HJ.Units[state.selected].size || 1);
+    if (!preview.changed) return;
+
+    const U = this.U();
+    const color = preview.reachable ? '#E8C65A' : '#E0705A';
+    ctx.globalAlpha = 0.72;
+    for (const route of preview.routes) {
+      if (!route.changed) continue;
+      for (let i = 1; i < route.cells.length; i++) {
+        const a = HJ.View.toScreen(route.cells[i - 1].col + 0.5, route.cells[i - 1].row + 0.5);
+        const b = HJ.View.toScreen(route.cells[i].col + 0.5, route.cells[i].row + 0.5);
+        this.pixelLine(ctx, a.x, a.y, b.x, b.y, U, color);
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    for (const p of preview.changedCells) {
+      const box = HJ.View.box(p.col, p.row, 1);
+      this.pixelFrame(ctx, Math.round(box.x + U), Math.round(box.y + U),
+        Math.max(U, Math.round(box.w - U * 2)), Math.max(U, Math.round(box.h - U * 2)), U,
+        'rgba(232, 198, 90, 0.55)');
+    }
+  },
+
   /* ---------------- 建造预览 ---------------- */
 
   drawPreview(ctx, state) {
     const h = state.hover;
-    if (state.selected === null || h.col < 0) return;
+    if (h.col < 0) return;
+
+    if (state.sellMode) {
+      const target = HJ.Map.occupant(state, h.col, h.row);
+      const n = target ? (target.size || 1) : 1;
+      const box = HJ.View.box(h.col, h.row, n);
+      const U = this.U();
+      const ok = !!(target && target.side === 'player');
+      ctx.fillStyle = ok ? 'rgba(224, 82, 74, 0.22)' : 'rgba(138, 140, 126, 0.16)';
+      ctx.fillRect(Math.round(box.x), Math.round(box.y), Math.round(box.w), Math.round(box.h));
+      this.pixelFrame(ctx, Math.round(box.x), Math.round(box.y), Math.round(box.w), Math.round(box.h), U,
+        ok ? '#E0705A' : '#8A8C7E');
+      return;
+    }
+
+    if (state.selected === null) return;
 
     const d = HJ.Units[state.selected];
     if (!d) return;
@@ -606,10 +665,16 @@ HJ.Scene = {
   /* ---------------- 指挥 ---------------- */
 
   drawCommand(ctx, state) {
+    const U = this.U();
+    const inspected = state.inspected;
+    if (inspected && inspected.alive) {
+      const p = HJ.View.toScreen(inspected.x, inspected.y);
+      const side = (inspected.size || 1) * HJ.View.ART + 4;
+      this.brackets(ctx, p.x, p.y, side, side, U, '#9FD7FF', 4);
+    }
+
     const u = state.selectedUnit;
     if (!u || !u.alive) return;
-
-    const U = this.U();
 
     /* 选框比精灵大一圈，别压着轮廓 —— 轮廓就是单位的身份。
        全选同类时每个都要框出来，否则玩家不知道到底选上了谁。 */
@@ -617,10 +682,11 @@ HJ.Scene = {
     if (!squad.length) squad.push(u);
     for (const m of squad) {
       const p = HJ.View.toScreen(m.x, m.y);
-      const side = m.kind === 'vehicle' ? 19 : 15;
+      const side = m.defId === 'mcv' ? 27 : m.kind === 'vehicle' ? 19 : 15;
       this.brackets(ctx, p.x, p.y, side, side, U, '#D9A441', 4);
     }
 
+    if (state.deployMode) return;
     const p = HJ.View.toScreen(u.x, u.y);
     const hp = HJ.View.toScreen(u.homeX, u.homeY);
     const col = 'rgba(217, 164, 65, 0.85)';
@@ -649,12 +715,14 @@ HJ.Scene = {
     const h = state.hover;
     if (!u || h.col < 0) return;
 
-    const box = HJ.View.box(h.col, h.row, 1);
+    const n = state.deployMode ? 4 : 1;
+    const box = HJ.View.box(h.col, h.row, n);
     const U = this.U();
 
     ctx.fillStyle = h.valid ? 'rgba(217, 164, 65, 0.18)' : 'rgba(166, 59, 50, 0.2)';
     ctx.fillRect(Math.round(box.x), Math.round(box.y), Math.round(box.w), Math.round(box.h));
-    this.brackets(ctx, box.cx, box.cy, 13, 13, U, h.valid ? '#D9A441' : '#A63B32', 4);
+    this.brackets(ctx, box.cx, box.cy, n * HJ.View.ART - 2, n * HJ.View.ART - 2,
+      U, h.valid ? '#D9A441' : '#A63B32', 4);
   },
 
   /* ---------------- 小工具 ---------------- */

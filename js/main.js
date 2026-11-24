@@ -14,11 +14,20 @@ HJ.Game = {
   acc: 0,
   last: 0,
   running: false,
+  mode: HJ.Config.DEFAULT_MODE,
+  mapId: HJ.Config.DEFAULT_MAP,
 
   boot() {
     const canvas = document.getElementById('game');
     HJ.Scene.init(canvas);
-    this.newGame();
+    const params = new URLSearchParams(location.search);
+    if (params.has('demo')) {
+      this.mode = HJ.Config.MODES[params.get('mode')] ? params.get('mode') : HJ.Config.DEFAULT_MODE;
+      this.mapId = params.get('map') || (this.mode === 'skirmish' ? 'steelCrossing' : HJ.Config.DEFAULT_MAP);
+      this.start(this.mode, this.mapId);
+    } else {
+      this.showTitle();
+    }
     this.last = performance.now();
     this.running = true;
     requestAnimationFrame((t) => this.frame(t));
@@ -33,15 +42,56 @@ HJ.Game = {
     document.addEventListener('keydown', unlock);
   },
 
-  newGame() {
-    const state = HJ.State.create({ map: HJ.Maps[HJ.Config.DEFAULT_MAP] });
+  start(mode, mapId) {
+    this.mode = mode;
+    const map = HJ.Maps[mapId] || this.firstMap(mode);
+    document.getElementById('app').classList.remove('title-open');
+    document.getElementById('title-screen').classList.add('hidden');
+    this.newGame(map.id);
+  },
+
+  firstMap(mode) {
+    for (const id in HJ.Maps) {
+      const map = HJ.Maps[id];
+      if (mode === 'skirmish' ? map.mode === 'skirmish' : map.mode === 'defense') return map;
+    }
+    return HJ.Maps[HJ.Config.DEFAULT_MAP];
+  },
+
+  showTitle() {
+    if (this.state && HJ.Input.state) HJ.Input.clearCommand();
+    this.state = null;
+    HJ.HUD.state = null;
+    if (HJ.Sfx) {
+      HJ.Sfx.clearDelayed();
+      HJ.Sfx.stopBGM();
+    }
+    document.getElementById('gameover').classList.add('hidden');
+    document.getElementById('app').classList.add('title-open');
+    document.getElementById('title-screen').classList.remove('hidden');
+    HJ.HUD.buildTitle();
+  },
+
+  newGame(mapId) {
+    const id = mapId || this.mapId || HJ.Config.DEFAULT_MAP;
+    const map = HJ.Maps[id];
+    this.mapId = id;
+    if ((this.mode === 'skirmish') !== (map.mode === 'skirmish')) {
+      this.mode = map.mode === 'skirmish' ? 'skirmish' : HJ.Config.DEFAULT_MODE;
+    }
+    if (HJ.Sfx) HJ.Sfx.clearDelayed();
+    const state = HJ.State.create({ map, mode: this.mode });
     this.state = state;
     this.acc = 0;
+    if (HJ.Input.state) HJ.Input.clearCommand();
 
     /* 开局送一座电厂，让玩家第一步就能造兵营。
        放在基地正上方 —— 现在敌人从三面来，玩家第一件要想的事就是"电厂放哪" */
-    HJ.State.spawnDefender(state, 'powerplant', 17, 15);
-    HJ.Economy.updatePower(state);
+    if (state.map.mode === 'defense') {
+      const start = state.map.start || { powerplant: { col: 17, row: 15 } };
+      HJ.State.spawnDefender(state, 'powerplant', start.powerplant.col, start.powerplant.row);
+      HJ.Economy.updatePower(state);
+    }
 
     HJ.HUD.init(state);
     HJ.Input.attach(state);
@@ -55,6 +105,8 @@ HJ.Game = {
     document.getElementById('btn-pause').classList.remove('active');
     document.getElementById('btn-speed').textContent = '1×';
     document.getElementById('btn-speed').classList.remove('active');
+    HJ.Scene.draw(state);
+    if (mapId) HJ.HUD.toast('已切换至「' + state.map.name + '」');
 
     /* 开发用：地址栏加 ?demo 会直接摆一排兵并立刻开波，
        用来快速检查渲染效果，不影响正常游玩 */
@@ -62,7 +114,19 @@ HJ.Game = {
   },
 
   demo(state) {
-    const layout = [
+    if (state.mode === 'skirmish') {
+      for (const sideId in state.sides) {
+        const mcv = state.sides[sideId].units.find(u => u.defId === 'mcv');
+        const start = state.map.starts[sideId];
+        HJ.Economy.deployMCV(state, mcv, start.col, start.row);
+        HJ.State.spawn(state, sideId, 'rhino', start.col + 5, start.row + 1);
+        HJ.State.spawn(state, sideId, 'gi', start.col + 5, start.row + 3);
+      }
+      HJ.Economy.updatePower(state);
+      HJ.Scene.draw(state);
+      return;
+    }
+    const layout = state.map.demo || [
       ['rhino', 10, 8], ['rhino', 13, 8], ['rhino', 22, 8], ['rhino', 25, 8],
       ['gi', 15, 12], ['gi', 18, 12], ['gi', 21, 12],
       ['prismtower', 14, 15], ['pillbox', 21, 15],
@@ -81,6 +145,7 @@ HJ.Game = {
     const T = HJ.Config.TICK;
     for (let i = 0; i < 60 * 26; i++) {
       HJ.Wave.update(state, T);
+      HJ.Economy.update(state, T);
       HJ.Economy.updatePower(state);
       HJ.Battle.step(state, T);
     }
@@ -131,7 +196,8 @@ HJ.Game = {
 
   restart() {
     this.newGame();
-    HJ.HUD.toast('第 ' + HJ.Waves.length + ' 波，守住基地');
+    HJ.HUD.toast(this.mode === 'skirmish' ? '展开 MCV，摧毁敌方基地'
+      : this.mode === 'endless' ? '无尽防守，坚持到最后一刻' : '第 ' + HJ.Waves.length + ' 波，守住基地');
   },
 
   /* ---------------- 主循环 ---------------- */
@@ -146,7 +212,7 @@ HJ.Game = {
     /* 切后台回来时 raw 会很大，钳一下避免一次性补算太多 */
     raw = Math.min(raw, 0.25);
 
-    if (!state.paused && !state.over) {
+    if (state && !state.paused && !state.over) {
       this.acc += raw * state.speed;
 
       let steps = 0;
@@ -157,8 +223,10 @@ HJ.Game = {
       }
     }
 
-    HJ.Scene.draw(state);
-    HJ.HUD.update();
+    if (state) {
+      HJ.Scene.draw(state);
+      HJ.HUD.update();
+    }
 
     requestAnimationFrame((t) => this.frame(t));
   },
@@ -168,7 +236,9 @@ HJ.Game = {
     state.time += dt;
 
     HJ.Wave.update(state, dt);
+    HJ.Economy.update(state, dt);
     HJ.Economy.updatePower(state);
+    HJ.AI.update(state, dt);
     HJ.Battle.step(state, dt);
   },
 };

@@ -29,7 +29,7 @@ HJ.State = {
   uid: 0,
 
   /**
-   * @param {object} opts { map: HJ.Maps 里的一项 }
+   * @param {object} opts { map: HJ.Maps 里的一项, mode?: defense|skirmish|endless }
    */
   create(opts) {
     const o = opts || {};
@@ -37,8 +37,8 @@ HJ.State = {
 
     const state = {
       map: map,
-      /* defense = 塔防波次；skirmish = 遭遇战 */
-      mode: map.mode,
+      /* 战斗类型；endless 与 classic 共用塔防地图，但波次规则不同 */
+      mode: o.mode || (map.mode === 'skirmish' ? 'skirmish' : 'defense'),
 
       /* 特效与痕迹是全场景共享的，不分侧 */
       effects: [],
@@ -58,6 +58,7 @@ HJ.State = {
       waveIndex: 0,
       waveActive: false,
       waveClock: 0,
+      currentWave: null,
       spawnQueue: [],
       prepTimer: 20,
       over: false,
@@ -74,6 +75,10 @@ HJ.State = {
       selectedUnit: null,
       /* 被指挥的一队：单选时就是它自己，「全选同类」时是一堆同型号 */
       squad: [],
+      /* 手机拆除模式与建筑检查状态 */
+      sellMode: false,
+      deployMode: false,
+      inspected: null,
       hover: { col: -1, row: -1, valid: false },
 
       /* ---------------------------------------------------------
@@ -97,9 +102,16 @@ HJ.State = {
     const p = state.sides.player;
     p.money = HJ.Config.START_MONEY;
     if (map.mode === 'defense') {
-      /* 塔防：敌人只会往里冲，玩家单位默认守着打 */
       p.posture = 'hold';
       state.sides.enemy.posture = 'push';
+    } else {
+      p.money = HJ.Config.SKIRMISH_MONEY;
+      state.sides.enemy.money = HJ.Config.SKIRMISH_MONEY;
+      state.sides.enemy.ai = HJ.AI ? HJ.AI.createBrain() : { clock: 0, deployClock: 2, attackClock: 0 };
+      for (const sideId in state.sides) {
+        const start = map.starts && map.starts[sideId];
+        if (start) HJ.State.spawn(state, sideId, 'mcv', start.col, start.row);
+      }
     }
 
     /* 画布尺寸、相机范围都由 view 层自己按 state.map 算，逻辑层不碰像素 */
@@ -111,6 +123,7 @@ HJ.State = {
     return {
       id: id,
       units: [],
+      queue: [],
       base: HJ.Map.baseOf(map, id),
 
       /* 经济。遭遇战两侧都用；塔防的 enemy 这份是摆设 */
@@ -228,6 +241,7 @@ HJ.State = {
       icon: spec.icon,
       radius: spec.radius,
       tags: spec.tags,
+      deployable: !!spec.deployable,
     };
 
     state.sides[side].units.push(u);
@@ -238,7 +252,7 @@ HJ.State = {
           state.occupied.set(c + ',' + r, u);
         }
       }
-      HJ.Field.dirty = true;
+      HJ.Field.markDirty();
     }
 
     return u;
@@ -255,9 +269,16 @@ HJ.State = {
    * 塔防波次生成一个敌人。
    * @param {string|number|object} entrance 入口 id、下标，或直接给 {x,y} 出生点
    */
-  spawnEnemy(state, enId, entrance) {
-    const spec = HJ.Enemies[enId];
-    if (!spec) return null;
+  spawnEnemy(state, enId, entrance, scale) {
+    const base = HJ.Enemies[enId];
+    if (!base) return null;
+    const k = scale || 1;
+    const spec = k === 1 ? base : {
+      ...base,
+      hp: Math.round(base.hp * k),
+      damage: Math.round(base.damage * (1 + (k - 1) * 0.65)),
+      bounty: Math.round(base.bounty * k),
+    };
 
     let pos;
     if (entrance && typeof entrance === 'object' && entrance.x !== undefined) {

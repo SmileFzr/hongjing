@@ -69,6 +69,12 @@ HJ.View = {
       const cs = window.getComputedStyle(parent);
       cssW = parent.clientWidth - this.px(cs.paddingLeft) - this.px(cs.paddingRight);
       cssH = parent.clientHeight - this.px(cs.paddingTop) - this.px(cs.paddingBottom);
+
+      /* #game 是 border-box：style.width 包含边框，backing store 却只画内容区。
+         不扣掉边框会让 CSS 把内部像素非整数拉伸，最近邻放大就糊了。 */
+      const frame = window.getComputedStyle(cv);
+      cssW -= this.px(frame.borderLeftWidth) + this.px(frame.borderRightWidth);
+      cssH -= this.px(frame.borderTopWidth) + this.px(frame.borderBottomWidth);
     } else {
       cssW = cv.clientWidth;
       cssH = cv.clientHeight;
@@ -114,8 +120,14 @@ HJ.View = {
       this.x = b.col + b.w / 2;
       this.y = b.row + b.h / 2;
     } else {
-      this.x = map.cols / 2;
-      this.y = map.rows / 2;
+      const start = map.starts && map.starts[focusSide || 'player'];
+      if (start) {
+        this.x = start.col + 1;
+        this.y = start.row + 1;
+      } else {
+        this.x = map.cols / 2;
+        this.y = map.rows / 2;
+      }
     }
     this.clamp();
   },
@@ -180,8 +192,18 @@ HJ.View = {
   fromCss(cssX, cssY) {
     const cv = this.canvas;
     const rect = cv.getBoundingClientRect();
-    if (!rect.width || !rect.height) return { x: 0, y: 0 };
-    return { x: cssX * (cv.width / rect.width), y: cssY * (cv.height / rect.height) };
+    const innerW = cv.clientWidth;
+    const innerH = cv.clientHeight;
+    if (!rect.width || !rect.height || !innerW || !innerH) return { x: 0, y: 0 };
+
+    /* rect.left 落在边框外沿，clientWidth 不含边框；两者必须用同一套内容区坐标。 */
+    const cs = window.getComputedStyle(cv);
+    const left = this.px(cs.borderLeftWidth);
+    const top = this.px(cs.borderTopWidth);
+    return {
+      x: (cssX - left) * (cv.width / innerW),
+      y: (cssY - top) * (cv.height / innerH),
+    };
   },
 
   /* 一格的四个角：左上 → 右上 → 右下 → 左下 */

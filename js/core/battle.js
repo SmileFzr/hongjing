@@ -169,8 +169,41 @@ HJ.Battle = {
     if (!dir) return;
 
     const sp = u.speed * dt;
-    const nx = u.x + dir.x * sp;
-    const ny = u.y + dir.y * sp;
+    let nx = u.x + dir.x * sp;
+    let ny = u.y + dir.y * sp;
+    const terrainStep = (x, y) => {
+      const col = Math.floor(x), row = Math.floor(y);
+      if (!isFinite(HJ.Map.moveCost(state.map, u.moveClass, col, row))) return false;
+      if (col !== Math.floor(u.x) && row !== Math.floor(u.y)) {
+        if (!isFinite(HJ.Map.moveCost(state.map, u.moveClass, col, Math.floor(u.y)))) return false;
+        if (!isFinite(HJ.Map.moveCost(state.map, u.moveClass, Math.floor(u.x), row))) return false;
+      }
+      return true;
+    };
+
+    /* 岸边的双线性梯度可能指向水格；改走相邻格里的最低代价，避免在河沿原地卡住。 */
+    if (!HJ.Map.inBase(state.map, goalSide, nx, ny, 0) && !terrainStep(nx, ny)) {
+      const col = Math.floor(u.x), row = Math.floor(u.y);
+      let best = null, bestD = HJ.Field.at(f, col, row);
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (!dr && !dc) continue;
+          const nc = col + dc, nr = row + dr;
+          if (!HJ.Map.inBounds(state.map, nc, nr)) continue;
+          if (!isFinite(HJ.Map.moveCost(state.map, u.moveClass, nc, nr))) continue;
+          if (dr && dc && (!isFinite(HJ.Map.moveCost(state.map, u.moveClass, nc, row))
+                        || !isFinite(HJ.Map.moveCost(state.map, u.moveClass, col, nr)))) continue;
+          const d = HJ.Field.at(f, nc, nr);
+          if (d < bestD) { bestD = d; best = { col: nc, row: nr }; }
+        }
+      }
+      if (best) {
+        const dx = best.col + 0.5 - u.x, dy = best.row + 0.5 - u.y;
+        const len = Math.hypot(dx, dy) || 1;
+        dir.x = dx / len; dir.y = dy / len;
+        nx = u.x + dir.x * sp; ny = u.y + dir.y * sp;
+      }
+    }
 
     /* 目标基地范围内不再做碰撞检测（单位就是要走进去打它） */
     if (goalBase && HJ.Map.inBase(state.map, goalSide, nx, ny, 0)) {
@@ -196,51 +229,138 @@ HJ.Battle = {
     this.emitMoveFx(state, u, dir.x, dir.y, sp);
   },
 
-  /* ---------------- 移动（hold 专用） ---------------- */
+  /* ---------------- 移动（hold 专用）--------------- */
+
+  /** 友军能否站在某个连续坐标上。建筑和基地都是硬障碍，不会像敌人那样拆墙。 */
+  canWalkAt(state, u, x, y) {
+    const col = Math.floor(x);
+    const row = Math.floor(y);
+    if (!HJ.Map.inBounds(state.map, col, row)) return false;
+    if (!isFinite(HJ.Map.moveCost(state.map, u.moveClass, col, row))) return false;
+    if (HJ.Map.occupantAt(state, x, y)) return false;
+    if (HJ.Economy.reservedAt(state, col, row)) return false;
+    return !HJ.Map.overlapsAnyBase(state.map, col, row, 1);
+  },
+
+  /** 斜向移动不能从两个障碍物的夹角穿过去。 */
+  canWalkStep(state, u, nx, ny) {
+    if (!this.canWalkAt(state, u, nx, ny)) return false;
+    if (Math.floor(nx) !== Math.floor(u.x) && Math.floor(ny) !== Math.floor(u.y)) {
+      if (!this.canWalkAt(state, u, nx, u.y)) return false;
+      if (!this.canWalkAt(state, u, u.x, ny)) return false;
+    }
+    return true;
+  },
+
+  /**
+   * 友军局部绕障：先直走，被建筑挡住就沿墙侧向走。
+   * 这不是完整 A*，但足够处理单栋建筑和墙体转角；连续两次卡住会换边，
+   * 避免在凹角永远左右抽搐。P2 的多入口地形再在此基础上接正式导航。
+   */
+  walkFriendly(u, tx, ty, step, state, limit) {
+    const dx = tx - u.x;
+    const dy = ty - u.y;
+    const d = Math.hypot(dx, dy);
+    if (d < 1e-4) return false;
+
+    const move = Math.min(step, d);
+    const ux = dx / d, uy = dy / d;
+    const within = (x, y) => !limit || HJ.Utils.dist(x, y, u.homeX, u.homeY) <= limit + 1e-6;
+    const accept = (x, y) => within(x, y) && this.canWalkStep(state, u, x, y);
+
+    let nx = u.x + ux * move;
+    let ny = u.y + uy * move;
+    if (accept(nx, ny)) {
+      u.avoidSide = 0;
+      u.stuck = 0;
+      this.applyFriendlyStep(u, nx, ny, ux, uy, state);
+      return true;
+    }
+
+    if (!u.avoidSide) u.avoidSide = u.uid % 2 ? 1 : -1;
+    const base = Math.atan2(dy, dx);
+    const side = u.avoidSide;
+    const angles = [
+      base + side * Math.PI / 2,
+      base + side * Math.PI / 4,
+      base + side * Math.PI * 3 / 4,
+      base - side * Math.PI / 2,
+      base - side * Math.PI / 4,
+      base - side * Math.PI * 3 / 4,
+    ];
+    for (const a of angles) {
+      nx = u.x + Math.cos(a) * move;
+      ny = u.y + Math.sin(a) * move;
+      if (!accept(nx, ny)) continue;
+      u.stuck = 0;
+      this.applyFriendlyStep(u, nx, ny, Math.cos(a), Math.sin(a), state);
+      return true;
+    }
+
+    u.stuck = (u.stuck || 0) + step;
+    if (u.stuck > 0.35) {
+      u.avoidSide = -side;
+      u.stuck = 0;
+    }
+    return false;
+  },
+
+  applyFriendlyStep(u, nx, ny, dirX, dirY, state) {
+    const step = Math.hypot(nx - u.x, ny - u.y);
+    u.x = nx;
+    u.y = ny;
+    u.col = Math.floor(nx);
+    u.row = Math.floor(ny);
+    this.emitMoveFx(state, u, dirX, dirY, step);
+  },
+
+  /** 驻扎点被后放的建筑压住时，给单位找一个附近空格，避免永远绕着一块不可达目标转。 */
+  relocateHome(state, u) {
+    if (this.canWalkAt(state, u, u.homeX, u.homeY)) return;
+    const map = state.map;
+    const c0 = Math.floor(u.homeX), r0 = Math.floor(u.homeY);
+    let best = null, bestD = Infinity;
+    for (let r = Math.max(0, r0 - 4); r <= Math.min(map.rows - 1, r0 + 4); r++) {
+      for (let c = Math.max(0, c0 - 4); c <= Math.min(map.cols - 1, c0 + 4); c++) {
+        const x = c + 0.5, y = r + 0.5;
+        const d = HJ.Utils.dist2(x, y, u.homeX, u.homeY);
+        if (d >= bestD || !this.canWalkAt(state, u, x, y)) continue;
+        bestD = d;
+        best = { x, y };
+      }
+    }
+    if (best) {
+      u.homeX = best.x;
+      u.homeY = best.y;
+    }
+  },
 
   /**
    * 出击。关键在限制条件用的是「离驻扎点」的距离，不是「离当前位置」——
    * 否则圆心跟着自己走，等于无限追击，坦克会一路追到地图外面去。
    */
   chase(u, t, state, dt) {
-    const dx = t.x - u.x;
-    const dy = t.y - u.y;
-    const L = Math.hypot(dx, dy) || 1;
-    const step = u.speed * dt;
-
-    const nx = u.x + (dx / L) * step;
-    const ny = u.y + (dy / L) * step;
-
-    if (HJ.Utils.dist(nx, ny, u.homeX, u.homeY) > u.leash) return;
-    if (HJ.Map.occupantAt(state, nx, ny)) return;
-
-    u.x = nx;
-    u.y = ny;
-    u.col = Math.floor(nx);
-    u.row = Math.floor(ny);
-    this.emitMoveFx(state, u, dx / L, dy / L, step);
+    this.walkFriendly(u, t.x, t.y, u.speed * dt, state, u.leash);
   },
 
   /** 归位。归位途中不还击，这就是「追出去」要付的代价 */
   returnHome(u, dt, state) {
+    this.relocateHome(state, u);
     const dx = u.homeX - u.x;
     const dy = u.homeY - u.y;
     const d = Math.hypot(dx, dy);
 
-    if (d < 0.06) {
+    if (d < 0.06 && this.canWalkAt(state, u, u.homeX, u.homeY)) {
       u.x = u.homeX;
       u.y = u.homeY;
       u.col = Math.floor(u.x);
       u.row = Math.floor(u.y);
+      u.avoidSide = 0;
+      u.stuck = 0;
       return;
     }
 
-    const step = Math.min(u.speed * dt, d);
-    u.x += (dx / d) * step;
-    u.y += (dy / d) * step;
-    u.col = Math.floor(u.x);
-    u.row = Math.floor(u.y);
-    this.emitMoveFx(state, u, dx / d, dy / d, step);
+    this.walkFriendly(u, u.homeX, u.homeY, Math.min(u.speed * dt, d), state, 0);
   },
 
   /**
@@ -387,10 +507,7 @@ HJ.Battle = {
     /* 赏金归杀掉对方的那一侧 */
     const rich = state.sides[victim.side === 'player' ? 'enemy' : 'player'];
 
-    if (victim.isBase) {
-      if (HJ.Sfx) HJ.Sfx.play('explode');
-      return;
-    }
+    if (victim.isBase) return;
 
     if (victim.side === 'enemy') {
       if (HJ.Sfx) HJ.Sfx.play('explode');
@@ -401,7 +518,7 @@ HJ.Battle = {
 
     /* 老兵晋升。P1a 先只给玩家侧，保持塔防难度与重构前可比；
        遭遇战做平衡时（P4）把 FOE_VETERANCY 打开，两侧对称 */
-    const foeLevels = killer.side === 'enemy' && HJ.Config.FOE_VETERANCY;
+    const foeLevels = killer.side === 'enemy' && (HJ.Config.FOE_VETERANCY || state.mode === 'skirmish');
     if (killer.side === 'player' || foeLevels) {
       killer.kills = (killer.kills || 0) + 1;
       const lv = killer.kills >= this.ELITE_KILLS ? 2
@@ -417,6 +534,8 @@ HJ.Battle = {
         });
       }
     }
+
+    if (victim.isBuilding && HJ.Economy) HJ.Economy.hostLost(state, victim);
 
     /* 建筑被打掉 → 立刻提示。兵营没了就造不出兵，
        这个反馈必须让玩家马上知道，否则他会以为是 bug */
@@ -453,8 +572,10 @@ HJ.Battle = {
     if (state.over) return;
 
     for (const sideId in state.sides) {
-      const b = state.sides[sideId].base;
-      if (!b || b.alive) continue;
+      const side = state.sides[sideId];
+      const b = side.base;
+      if (b && b.alive) continue;
+      if (!b && (state.mode !== 'skirmish' || side.units.some(u => u.alive && u.deployable))) continue;
 
       state.over = true;
       state.winner = HJ.State.foeSideId(sideId);

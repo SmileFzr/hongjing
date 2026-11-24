@@ -529,6 +529,27 @@ function hullOf(o) {
   return rows;
 }
 
+VEH.mcv = {
+  hull: hullOf({ trackW: 2, grill: 2, glacis: 15 }).map((line, y) => {
+    const cells = line.split('');
+    if (y >= 4 && y <= 13) {
+      for (let x = 3; x <= 16; x++) cells[x] = 'M';
+      for (let x = 4; x <= 15; x++) {
+        cells[x] = y === 4 || y === 13 ? 'k' : 'H';
+      }
+      cells[3] = cells[16] = 'M';
+    }
+    if (y >= 7 && y <= 10) {
+      for (let x = 6; x <= 13; x++) cells[x] = y >= 8 && y <= 9 && x >= 8 && x <= 11 ? 'y' : 'W';
+    }
+    if (y === 11) {
+      for (let x = 6; x <= 13; x++) cells[x] = 'l';
+    }
+    return cells.join('');
+  }),
+  turret: null,
+};
+
 /* --- 灰熊（盟军）：五对轮、炮塔偏前、尾部储物篮 --- */
 VEH.grizzly = {
   hull: hullOf({ inset: 2, trackW: 3 }),
@@ -897,7 +918,7 @@ HJ.Pixel = {
   SHAPES: {
     gi: 'gi', conscript: 'conscript', rocket: 'rocket', tanya: 'tanya',
     grizzly: 'grizzly', rhino: 'rhino', ifv: 'ifv', prism: 'prism',
-    apocalypse: 'apocalypse', terror: 'terror',
+    apocalypse: 'apocalypse', terror: 'terror', mcv: 'mcv',
   },
 
   shapeOf(defId) { return this.SHAPES[defId] || 'gi'; },
@@ -911,7 +932,7 @@ HJ.Pixel = {
   turretKey(u, dir) {
     if (u.kind !== 'vehicle') return null;
     const shape = this.SHAPES[u.defId];
-    if (shape === 'terror') return null;
+    if (shape === 'terror' || shape === 'mcv') return null;
     return 'tur:' + u.side + ':' + (shape || 'grizzly') + ':' + dir;
   },
   buildingKey(defId) { return 'bld:' + defId; },
@@ -1079,6 +1100,7 @@ HJ.Pixel = {
       forest: { base: 'grs.d', alt: ['grs.m', 'ink.d'], decor: [['tree', 2], ['tuft', 1]] },
       rock: { base: 'rock.d', alt: ['rock.m', 'ink.d'], decor: [['boulder', 1], ['crack', 1]] },
       water: { base: 'wat.m', alt: ['wat.l', 'wat.d'], decor: [['wave', 3]] },
+      bridge: { base: 'rock.l', alt: ['rock.m', 'rock.d'], decor: [['crack', 1]], pave: true },
     };
 
     let seed = 20261123;

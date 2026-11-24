@@ -31,6 +31,7 @@ HJ.Field = {
 
   /* key = goalSide + ':' + moveClass */
   cache: new Map(),
+  previewCache: new Map(),
 
   /* 地形脏标记。放/拆建筑时置 true，主循环里统一重算一次，
      这样玩家连点十下也只算一次 */
@@ -45,12 +46,14 @@ HJ.Field = {
 
   markDirty() {
     this.dirty = true;
+    this.previewCache.clear();
   },
 
   /** 主循环每步调一次：脏了就作废所有缓存，具体重建推迟到真正被问到时 */
   ensure() {
     if (!this.dirty) return;
     this.cache.clear();
+    this.previewCache.clear();
     this.dirty = false;
   },
 
@@ -62,6 +65,7 @@ HJ.Field = {
    * @returns {object|null} 该侧没有基地时返回 null（塔防的 enemy 就是这样）
    */
   get(state, goalSide, moveClass) {
+    if (this.dirty) this.ensure();
     const k = this.key(goalSide, moveClass);
     let f = this.cache.get(k);
     if (f) return f;
@@ -81,14 +85,16 @@ HJ.Field = {
 
   /* ---------------- 重建 ---------------- */
 
-  build(state, goalSide, moveClass) {
+  build(state, goalSide, moveClass, extraBuilding) {
     const map = state.map;
     const C = map.cols;
     const R = map.rows;
     const N = C * R;
 
-    const dist = new Float32Array(N);
+    const dist = new Float64Array(N);
+    const parent = new Int32Array(N);
     dist.fill(Infinity);
+    parent.fill(-1);
 
     const goal = HJ.Map.baseOf(map, goalSide);
 
@@ -115,12 +121,23 @@ HJ.Field = {
       }
     }
 
+    if (extraBuilding) {
+      for (let r = extraBuilding.row; r < extraBuilding.row + extraBuilding.size; r++) {
+        for (let c = extraBuilding.col; c < extraBuilding.col + extraBuilding.size; c++) {
+          if (c < 0 || r < 0 || c >= C || r >= R) continue;
+          const i = r * C + c;
+          if (isFinite(cost[i])) cost[i] = Math.max(cost[i], this.BREACH_COST);
+        }
+      }
+    }
+
     const f = {
       goalSide: goalSide,
       moveClass: moveClass,
       cols: C,
       rows: R,
       dist: dist,
+      parent: parent,
       goal: goal ? { x: goal.col + goal.w / 2, y: goal.row + goal.h / 2 } : null,
     };
 
@@ -200,6 +217,7 @@ HJ.Field = {
           const nd = d + step * cost[ni];
           if (nd < dist[ni]) {
             dist[ni] = nd;
+            parent[ni] = idx;
             push(nd, ni);
           }
         }
@@ -207,6 +225,56 @@ HJ.Field = {
     }
 
     return f;
+  },
+
+  /* ---------------- 建造路线预览 ---------------- */
+
+  route(f, entrance) {
+    if (!f || !entrance) return [];
+    const cells = [];
+    const seen = new Set();
+    let idx = entrance.row * f.cols + entrance.col;
+    while (idx >= 0 && !seen.has(idx)) {
+      seen.add(idx);
+      const col = idx % f.cols;
+      cells.push({ col, row: (idx - col) / f.cols });
+      idx = f.parent[idx];
+    }
+    return cells;
+  },
+
+  preview(state, col, row, size) {
+    if (this.dirty) this.ensure();
+    const key = col + ',' + row + ':' + (size || 1);
+    if (this.previewCache.has(key)) return this.previewCache.get(key);
+
+    const before = this.get(state, 'player', 'track');
+    const after = this.build(state, 'player', 'track', { col, row, size: size || 1 });
+    const routes = [];
+    const changedCells = new Map();
+    let changed = 0, reachable = true;
+
+    for (const e of state.map.entrances) {
+      const oldPath = this.route(before, e);
+      const newPath = this.route(after, e);
+      const pathKey = path => path.map(p => p.col + ',' + p.row).join(';');
+      const differs = pathKey(oldPath) !== pathKey(newPath);
+      const last = newPath[newPath.length - 1];
+      if (!last || this.at(after, last.col, last.row) > 0) reachable = false;
+      if (differs) {
+        changed++;
+        const common = new Set(oldPath.map(p => p.col + ',' + p.row));
+        for (const p of newPath) {
+          const k = p.col + ',' + p.row;
+          if (!common.has(k)) changedCells.set(k, p);
+        }
+      }
+      routes.push({ id: e.id, cells: newPath, changed: differs });
+    }
+
+    const result = { routes, changedCells: Array.from(changedCells.values()), changed, reachable };
+    this.previewCache.set(key, result);
+    return result;
   },
 
   /* ---------------- 采样 ---------------- */

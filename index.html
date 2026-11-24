@@ -8,7 +8,7 @@
 <meta name="theme-color" content="#0b0e0c">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>红警塔防 · 原型 v0.2</title>
+<title>红警前线 · 手机网页战术游戏</title>
 <link rel="stylesheet" href="css/base.css">
 <link rel="stylesheet" href="css/layout.css">
 <link rel="stylesheet" href="css/ui.css">
@@ -31,6 +31,7 @@
       <button id="btn-pause" class="btn" title="空格键也可以暂停">暂停</button>
       <button id="btn-speed" class="btn" title="切换 1 倍 / 2 倍速">1×</button>
       <button id="btn-restart" class="btn" title="重新开始">重开</button>
+      <button id="btn-title" class="btn" title="返回标题选择战斗类型">标题</button>
     </div>
   </header>
 
@@ -43,6 +44,7 @@
         <button id="cmd-cancel" class="cmd" title="取消当前选择（Esc / 右键）">取消</button>
         <button id="cmd-same" class="cmd" title="把同型号的单位全收进指挥">同类</button>
         <button id="cmd-home" class="cmd" title="镜头回到基地">回基地</button>
+        <button id="cmd-sell" class="cmd" title="点己方建筑拆除，返还一半造价">拆除</button>
       </div>
 
       <div id="toast" class="toast"></div>
@@ -50,15 +52,19 @@
         <div class="go-title">基地失守</div>
         <div class="go-sub" id="go-sub">撑到了第 1 波</div>
         <button class="btn btn-primary" id="btn-again">再来一次</button>
+        <button class="btn" id="btn-go-title">返回标题</button>
       </div>
     </div>
 
     <aside id="sidebar">
       <div class="side-head">
-        <span>建造清单</span>
+        <label class="map-picker" title="切换地图会重新开始本局">地图
+          <select id="map-select" aria-label="选择地图"></select>
+        </label>
         <span class="side-power" id="side-power">电力充足</span>
       </div>
       <nav id="tabs" class="tabs"></nav>
+      <section id="queue" class="queue" aria-label="生产队列"></section>
       <div id="shop" class="shop"></div>
       <div class="side-foot" id="side-hint">
         选中一项后，点击地图上的空地放置。
@@ -67,6 +73,24 @@
     </aside>
   </main>
 
+</div>
+
+<div id="title-screen" class="title-screen hidden">
+  <div class="title-grid"></div>
+  <div class="title-panel">
+    <div class="title-kicker">COMMAND &amp; CONQUER · WEB DEFENSE</div>
+    <h1>红警前线</h1>
+    <p class="title-lead">建造防线，指挥部队，守住每一格阵地。</p>
+    <div id="title-modes" class="title-modes" role="group" aria-label="选择战斗类型"></div>
+    <div class="title-setup">
+      <label for="title-map">作战地图
+        <select id="title-map" aria-label="标题页选择地图"></select>
+      </label>
+      <p id="title-map-desc"></p>
+    </div>
+    <button id="btn-start" class="btn btn-primary title-start">开始战斗</button>
+    <div class="title-help">单指平移 · 双指缩放 · 轻点选择 / 放置<br>遭遇战：选中 MCV 后轻点空地展开基地</div>
+  </div>
 </div>
 
 <script src="js/core/config.js"></script>
@@ -84,6 +108,7 @@
 <script src="js/game/state.js"></script>
 <script src="js/game/economy.js"></script>
 <script src="js/game/wave.js"></script>
+<script src="js/game/ai.js"></script>
 <script src="js/render/pixel.js"></script>
 <script src="js/render/scene.js"></script>
 <script src="js/render/hud.js"></script>
